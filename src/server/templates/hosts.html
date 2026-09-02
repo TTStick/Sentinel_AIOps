@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}我的主机{% endblock %}
+{% block crumb %}FLEET{% endblock %}
+{% block heading %}主机与分组{% endblock %}
+{% block actions %}
+<button class="btn ghost sm" onclick="openGroup()">＋ 新建分组</button>
+<button class="btn primary sm" onclick="openHost()">＋ 添加主机</button>
+{% endblock %}
+
+{% block content %}
+<div class="grid g-4" id="miniKpi" style="margin-bottom:16px"></div>
+
+<div style="display:grid;grid-template-columns:210px 1fr;gap:18px">
+  <!-- 分组侧栏 -->
+  <div class="card" style="height:fit-content">
+    <div class="card-h"><h3>分组</h3></div>
+    <div class="card-b" style="padding:8px" id="groupList"></div>
+  </div>
+
+  <!-- 主机网格 -->
+  <div>
+    <div class="row" style="margin-bottom:14px"><input id="search" placeholder="搜索主机名 / 地址 / 标签…" style="max-width:340px" oninput="render()"><span class="sp"></span><span class="muted tiny" id="count"></span></div>
+    <div class="grid g-3" id="hostGrid"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let HOSTS=[], GROUPS=[], activeGroup='all';
+
+async function load(){
+  const [hd, gd, ud] = await Promise.all([
+    API.get('/api/hosts'), API.get('/api/groups'), API.get('/api/dashboard/user')]);
+  HOSTS=hd.hosts; GROUPS=gd.groups;
+  renderKpi(ud.summary); renderGroups(); render();
+}
+
+function renderKpi(s){
+  const cards=[['主机',s.total,`在线 ${s.online}`],['平均健康',s.avg_health,'0–100'],
+    ['警告',s.Warning||0,'需关注'],['严重',s.Critical||0,'需处理']];
+  document.getElementById('miniKpi').innerHTML=cards.map((c,i)=>`
+    <div class="kpi ${i===0?'accent':''}"><div class="k-label">${c[0]}</div>
+      <div class="k-val">${c[1]}</div><div class="k-sub">${c[2]}</div></div>`).join('');
+}
+
+function renderGroups(){
+  const counts={}; HOSTS.forEach(h=>{ const k=h.group_id||'none'; counts[k]=(counts[k]||0)+1; });
+  let html=`<div class="gitem ${activeGroup==='all'?'on':''}" onclick="pickGroup('all')">
+    <span class="dot ok"></span>全部主机<span class="sp"></span><span class="mono muted">${HOSTS.length}</span></div>`;
+  GROUPS.forEach(g=>{
+    html+=`<div class="gitem ${activeGroup==g.id?'on':''}" onclick="pickGroup(${g.id})">
+      <span class="dot" style="background:${g.color};box-shadow:0 0 8px ${g.color}"></span>
+      ${F.esc(g.name)}<span class="sp"></span><span class="mono muted">${counts[g.id]||0}</span>
+      <span class="gact" onclick="event.stopPropagation();editGroup(${g.id})">✎</span></div>`;
+  });
+  html+=`<div class="gitem ${activeGroup==='none'?'on':''}" onclick="pickGroup('none')">
+    <span class="dot off"></span>未分组<span class="sp"></span><span class="mono muted">${counts['none']||0}</span></div>`;
+  document.getElementById('groupList').innerHTML=html;
+}
+
+function pickGroup(g){ activeGroup=g; renderGroups(); render(); }
+
+function render(){
+  const q=(document.getElementById('search').value||'').toLowerCase();
+  let list=HOSTS.filter(h=>{
+    if(activeGroup==='none' && h.group_id) return false;
+    if(activeGroup!=='all' && activeGroup!=='none' && h.group_id!=activeGroup) return false;
+    if(q && !(`${h.name} ${h.address} ${h.tags}`.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  document.getElementById('count').textContent=`${list.length} 台`;
+  const grid=document.getElementById('hostGrid');
+  if(!list.length){ grid.innerHTML='<div class="empty" style="grid-column:1/-1">没有匹配的主机</div>'; return; }
+  grid.innerHTML=list.map(hostCard).join('');
+}
+
+function hostCard(h){
+  const m=h.last_metrics||{};
+  const perm={admin:'管理',operate:'操作',view:'只读'}[h.permission]||h.permission||'';
+  return `<div class="card hostcard" onclick="location.href='/hosts/${h.id}'">
+    <div class="card-b">
+      <div class="row" style="margin-bottom:12px">
+        ${onlineDot(h.online)}
+        <b class="name" style="font-size:14.5px">${F.esc(h.name)}</b>
+        <span class="sp"></span>${riskBadge(h.risk_level)}
+      </div>
+      <div class="row" style="gap:14px">
+        ${ring(h.health)}
+        <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:7px 14px">
+          ${metricMini('CPU',m.cpu)} ${metricMini('内存',m.memory_pct)}
+          ${metricMini('磁盘',m.disk_pct)} ${metricMini('负载',m.load1,true)}
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="row tiny muted" style="justify-content:space-between">
+        <span class="mono">${F.esc(h.address||'未配置地址')}</span>
+        <span class="badge">${perm}</span>
+      </div>
+    </div>
+  </div>`;
+}
+function metricMini(label,v,raw){
+  const val=raw?(v==null?'—':v):(v==null?'—':F.pct(v));
+  let col='var(--ink)'; if(!raw&&v!=null){ if(v>=90)col='var(--crit)'; else if(v>=75)col='var(--warn)'; }
+  return `<div><div class="tiny muted">${label}</div><div class="mono" style="font-size:15px;color:${col}">${val}</div></div>`;
+}
+
+/* ---------- 主机增改 ---------- */
+function openHost(host){
+  const h=host||{};
+  const opts=GROUPS.map(g=>`<option value="${g.id}" ${h.group_id==g.id?'selected':''}>${F.esc(g.name)}</option>`).join('');
+  const m=modal(`
+    <label class="field"><span>名称 *</span><input id="h-name" value="${F.esc(h.name||'')}"></label>
+    <div class="grid g-2">
+      <label class="field"><span>地址 / IP</span><input id="h-addr" value="${F.esc(h.address||'')}" placeholder="10.0.0.5"></label>
+      <label class="field"><span>SSH 端口</span><input id="h-port" type="number" value="${h.ssh_port||22}"></label>
+    </div>
+    <div class="grid g-2">
+      <label class="field"><span>SSH 用户</span><input id="h-user" value="${F.esc(h.ssh_user||'root')}"></label>
+      <label class="field"><span>认证方式</span><select id="h-auth">
+        <option value="password" ${h.ssh_auth=='password'?'selected':''}>密码</option>
+        <option value="key" ${h.ssh_auth=='key'?'selected':''}>私钥</option></select></label>
+    </div>
+    <label class="field"><span>凭据（密码或私钥内容）${host?'（留空表示不修改）':''}</span>
+      <textarea id="h-secret" rows="2" placeholder="${host?'••••••（保持不变）':'输入 SSH 密码或粘贴私钥'}"></textarea></label>
+    <div class="grid g-2">
+      <label class="field"><span>分组</span><select id="h-group"><option value="">未分组</option>${opts}</select></label>
+      <label class="field"><span>标签（逗号分隔）</span><input id="h-tags" value="${F.esc(h.tags||'')}"></label>
+    </div>
+    <div class="alert info tiny">添加后会生成专属 Agent Token，用于该主机上报指标。</div>
+  `,{title:host?'编辑主机':'添加主机',
+     footer:`${host?`<button class="btn danger" id="h-del" style="margin-right:auto">删除主机</button>`:''}
+             <button class="btn ghost" onclick="document.getElementById('app-modal').classList.remove('show')">取消</button>
+             <button class="btn primary" id="h-save">保存</button>`});
+  if(host){ m.el.querySelector('#h-del').onclick=()=>deleteHost(host, m); }
+  m.el.querySelector('#h-save').onclick=async()=>{
+    const body={name:val('h-name'),address:val('h-addr'),ssh_port:+val('h-port'),ssh_user:val('h-user'),
+      ssh_auth:val('h-auth'),ssh_secret:val('h-secret'),group_id:val('h-group')?+val('h-group'):null,tags:val('h-tags')};
+    if(!body.name){ toast('请填写名称','err'); return; }
+    try{
+      if(host){ await API.put('/api/hosts/'+host.id, body); toast('已保存'); }
+      else { const r=await API.post('/api/hosts', body); showToken(r.agent_token); }
+      m.close(); load();
+    }catch(e){ toast(e.message,'err'); }
+  };
+}
+async function deleteHost(host, m){
+  if(!confirm(`确认删除主机「${host.name}」？\n此操作不可恢复，将一并清除其指标、异常、基线与预测数据。`)) return;
+  try{
+    await API.del('/api/hosts/'+host.id);
+    toast('主机已删除');
+    if(m&&m.close) m.close(); else document.getElementById('app-modal').classList.remove('show');
+    load();
+  }catch(e){ toast(e.message,'err'); }
+}
+function showToken(tok){
+  modal(`<div class="alert info" style="margin-bottom:14px">主机已创建。请在目标机 Agent 配置中填入以下 Token：</div>
+    <div class="mono" style="background:var(--bg-3);border:1px solid var(--line);border-radius:9px;padding:12px;word-break:break-all">${F.esc(tok)}</div>`,
+    {title:'Agent Token'});
+}
+const val=id=>document.getElementById(id).value.trim();
+
+/* ---------- 分组增改 ---------- */
+function openGroup(g){
+  g=g||{};
+  const m=modal(`
+    <label class="field"><span>分组名称 *</span><input id="g-name" value="${F.esc(g.name||'')}"></label>
+    <label class="field"><span>颜色</span><input id="g-color" type="color" value="${g.color||'#22d3ee'}" style="height:42px;padding:4px"></label>
+    <label class="field"><span>描述</span><input id="g-desc" value="${F.esc(g.description||'')}"></label>`,
+    {title:g.id?'编辑分组':'新建分组',
+     footer:`<button class="btn ghost" onclick="document.getElementById('app-modal').classList.remove('show')">取消</button>
+             ${g.id?`<button class="btn danger" id="g-del">删除</button>`:''}
+             <button class="btn primary" id="g-save">保存</button>`});
+  m.el.querySelector('#g-save').onclick=async()=>{
+    const body={name:val('g-name'),color:val('g-color'),description:val('g-desc')};
+    if(!body.name){ toast('请填写名称','err'); return; }
+    try{ if(g.id) await API.put('/api/groups/'+g.id,body); else await API.post('/api/groups',body);
+      toast('已保存'); m.close(); load(); }catch(e){ toast(e.message,'err'); }
+  };
+  if(g.id) m.el.querySelector('#g-del').onclick=async()=>{
+    try{ await API.del('/api/groups/'+g.id); toast('分组已删除'); m.close(); activeGroup='all'; load(); }
+    catch(e){ toast(e.message,'err'); }
+  };
+}
+function editGroup(id){ openGroup(GROUPS.find(x=>x.id===id)); }
+
+load();
+</script>
+<style>
+.gitem{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;cursor:pointer;font-size:13px;color:var(--ink-2)}
+.gitem:hover{background:var(--bg-3)}.gitem.on{background:var(--signal-soft);color:var(--signal-deep)}
+.gitem .gact{opacity:0;color:var(--ink-3)}.gitem:hover .gact{opacity:1}
+.hostcard{cursor:pointer;transition:.15s}.hostcard:hover{border-color:#e3c6b8;transform:translateY(-2px);box-shadow:0 12px 28px -18px rgba(90,60,36,.5)}
+</style>
+{% endblock %}

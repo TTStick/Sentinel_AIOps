@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}WebSSH{% endblock %}
+{% block crumb %}WEBSSH · #{{ host_id }}{% endblock %}
+{% block heading %}<span id="hostName">WebSSH 终端</span>{% endblock %}
+{% block actions %}
+<span class="badge" id="connState"><span class="dot off"></span>未连接</span>
+<a class="btn ghost sm" href="/hosts/{{ host_id }}">返回详情</a>
+{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div style="display:grid;grid-template-columns:200px 1fr 320px;gap:14px;height:calc(100vh - 150px)">
+
+  <!-- 命令按钮 -->
+  <div class="card" style="overflow:auto">
+    <div class="card-h"><h3>常用命令</h3></div>
+    <div class="card-b" id="btnPanel" style="padding:10px"><div class="empty tiny">加载中…</div></div>
+  </div>
+
+  <!-- 终端 -->
+  <div class="card" style="display:flex;flex-direction:column;overflow:hidden">
+    <div class="card-h"><h3>终端</h3>
+      <span class="sub mono" id="termHint">连接中…</span></div>
+    <div id="term" style="flex:1;padding:10px;background:#241f1b;border-radius:10px"></div>
+  </div>
+
+  <!-- AI 提示 -->
+  <div class="ai-card" style="display:flex;flex-direction:column;overflow:hidden">
+    <div class="ai-h"><span class="spark"></span>AI 终端助手</div>
+    <div class="card-b" style="flex:1;overflow:auto" id="aiPanel">
+      <div class="muted tiny">点击下方「分析当前终端」，AI 会基于最近输出给出排障建议命令；命令会标注风险，点选即可填入终端（高危需确认）。</div>
+    </div>
+    <div style="padding:12px;border-top:1px solid #133842">
+      <input id="aiGoal" placeholder="可选：描述你的排障目标" style="margin-bottom:8px">
+      <button class="btn primary sm" style="width:100%;justify-content:center" onclick="askAI()">分析当前终端</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const HID={{ host_id }};
+let term, fit, ws, recent='', sessionId=null;
+
+function setState(connected){
+  const el=document.getElementById('connState');
+  el.innerHTML=connected?'<span class="dot ok"></span>已连接':'<span class="dot off"></span>未连接';
+}
+
+function initTerm(){
+  term=new Terminal({fontFamily:"'JetBrains Mono',monospace",fontSize:13,cursorBlink:true,
+    theme:{background:'#241f1b',foreground:'#ece3d4',cursor:'#e08a63',selectionBackground:'#4a3d33'}});
+  fit=new FitAddon.FitAddon(); term.loadAddon(fit);
+  term.open(document.getElementById('term')); fit.fit();
+  term.onData(d=>{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'input',data:d})); });
+  // 收集最近输出供 AI 使用
+  term.onLineFeed(()=>{ try{ const b=term.buffer.active; const y=b.cursorY+b.viewportY;
+    const line=b.getLine(y-1); if(line) recent=(recent+'\n'+line.translateToString(true)).slice(-3000); }catch(e){} });
+  window.addEventListener('resize',()=>{ fit.fit(); sendResize(); });
+}
+
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}/ws/ssh/${HID}`);
+  ws.onopen=()=>{ document.getElementById('termHint').textContent='通道已建立'; };
+  ws.onmessage=(e)=>{
+    const m=JSON.parse(e.data);
+    if(m.type==='output'){ term.write(m.data); recent=(recent+m.data).slice(-3000); }
+    else if(m.type==='ready'){ sessionId=m.session_id; setState(true); document.getElementById('termHint').textContent='会话 #'+sessionId; sendResize(); }
+    else if(m.type==='error'){ term.write('\r\n\x1b[31m['+m.msg+']\x1b[0m\r\n'); toast(m.msg,'err'); setState(false); }
+  };
+  ws.onclose=()=>{ setState(false); document.getElementById('termHint').textContent='连接已关闭'; term.write('\r\n\x1b[33m[连接已断开]\x1b[0m\r\n'); };
+  ws.onerror=()=>{ toast('WebSocket 连接失败','err'); };
+}
+
+function sendResize(){ if(ws&&ws.readyState===1&&term) ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows})); }
+
+function runCmd(cmd, source='button'){
+  if(!ws||ws.readyState!==1){ toast('终端未连接','err'); return; }
+  ws.send(JSON.stringify({type:'exec',cmd,source}));
+}
+
+async function confirmAndRun(cmd){
+  // 高危命令二次确认
+  try{
+    const v=await API.post('/api/ai/guard',{cmd});
+    if(v.risk==='dangerous'){ if(!confirm('⚠ 高危命令：'+v.reason+'\n\n确认执行？\n'+cmd)) return; }
+    else if(v.risk==='caution'){ if(!confirm('注意：'+v.reason+'\n\n确认执行？\n'+cmd)) return; }
+  }catch(e){}
+  runCmd(cmd);
+}
+
+async function loadButtons(){
+  const d=await API.get('/api/ssh/buttons');
+  document.getElementById('btnPanel').innerHTML=d.buttons.map(g=>`
+    <div class="tiny muted" style="margin:10px 4px 6px;letter-spacing:.08em">${F.esc(g.group)}</div>
+    ${g.items.map(it=>`<button class="cmdbtn" onclick="confirmAndRun('${F.esc(it.cmd).replace(/'/g,"\\'")}')">${F.esc(it.label)}</button>`).join('')}
+  `).join('');
+}
+
+async function askAI(){
+  const goal=document.getElementById('aiGoal').value.trim();
+  const panel=document.getElementById('aiPanel');
+  panel.innerHTML='<div class="muted tiny">AI 分析中…</div>';
+  try{
+    const r=await API.post('/api/ai/ssh_suggest/'+HID,{context:recent.slice(-1800),goal});
+    let html=`<div style="font-size:13px;margin-bottom:12px">${F.esc(r.advice||'（无建议）')}</div>`;
+    (r.commands||[]).forEach(c=>{
+      html+=`<div style="border:1px solid var(--line);border-radius:9px;padding:9px;margin-bottom:9px">
+        <div class="mono tiny ${cmdRiskClass(c.risk)}">${F.esc(c.cmd)}</div>
+        <div class="tiny muted" style="margin:5px 0 7px">${F.esc(c.reason||c.why||'')}</div>
+        <div class="row"><span class="badge ${c.risk==='dangerous'?'crit':(c.risk==='caution'?'warn':'ok')}">${cmdRiskLabel(c.risk)}</span>
+          <span class="sp"></span>
+          <button class="btn sm" onclick="term.paste('${F.esc(c.cmd).replace(/'/g,"\\'")}')">填入</button>
+          <button class="btn sm primary" onclick="confirmAndRun('${F.esc(c.cmd).replace(/'/g,"\\'")}')">执行</button></div>
+      </div>`;
+    });
+    panel.innerHTML=html;
+  }catch(e){ panel.innerHTML='<div class="alert crit tiny">'+F.esc(e.message)+'</div>'; }
+}
+
+(async function(){
+  try{ const h=await API.get('/api/hosts/'+HID); document.getElementById('hostName').textContent='WebSSH · '+h.name; }catch(e){}
+  initTerm(); await loadButtons(); connect();
+})();
+</script>
+<style>
+.cmdbtn{display:block;width:100%;text-align:left;margin:3px 0;padding:7px 10px;border-radius:8px;
+  border:1px solid var(--line);background:var(--bg-3);color:var(--ink-2);font-size:12.5px;cursor:pointer;transition:.12s}
+.cmdbtn:hover{border-color:var(--signal);color:var(--signal-deep);background:var(--signal-soft)}
+.xterm{height:100%}
+</style>
+{% endblock %}

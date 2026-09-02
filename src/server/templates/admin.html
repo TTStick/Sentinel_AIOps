@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}超级管理员{% endblock %}
+{% block crumb %}管理 · CONTROL{% endblock %}
+{% block heading %}超级管理员面板{% endblock %}
+{% block actions %}
+<button class="btn ghost sm" onclick="reloadAll()">刷新</button>
+<button class="btn primary sm" onclick="openUserModal()">+ 新建用户</button>
+{% endblock %}
+
+{% block content %}
+<!-- 全局小仪表盘 -->
+<div class="grid g-4" id="adminKpis" style="margin-bottom:16px"></div>
+
+<div class="tabs" style="margin-bottom:14px">
+  <button class="tab active" data-tab="users" onclick="switchTab('users')">用户管理</button>
+  <button class="tab" data-tab="hosts" onclick="switchTab('hosts')">主机分配</button>
+</div>
+
+<!-- ============ 用户管理 ============ -->
+<div id="tab-users">
+  <div class="card">
+    <div class="card-h"><h3>全部用户</h3><span class="sub muted tiny" id="userCount">—</span></div>
+    <div class="card-b" style="padding:0"><table id="userTable"><thead>
+      <tr><th>用户</th><th>角色</th><th>状态</th><th>主机</th><th>分组</th><th>上次登录</th><th style="text-align:right">操作</th></tr>
+    </thead><tbody><tr><td colspan="7"><div class="empty">加载中…</div></td></tr></tbody></table></div>
+  </div>
+</div>
+
+<!-- ============ 主机分配 ============ -->
+<div id="tab-hosts" style="display:none">
+  <div style="display:grid;grid-template-columns:1fr 360px;gap:16px">
+    <div class="card">
+      <div class="card-h"><h3>全部主机</h3><span class="sub muted tiny" id="hostCount">—</span></div>
+      <div class="card-b" style="padding:0"><table id="hostTable"><thead>
+        <tr><th>主机</th><th>归属</th><th>风险</th><th>共享给</th><th style="text-align:right">操作</th></tr>
+      </thead><tbody><tr><td colspan="5"><div class="empty">加载中…</div></td></tr></tbody></table></div>
+    </div>
+    <div class="ai-card" style="align-self:start">
+      <div class="ai-h"><span class="spark"></span>分配说明</div>
+      <div class="card-b tiny" style="line-height:1.8;color:var(--ink-2)">
+        <b>归属</b>：主机的主人，拥有完整权限。<br>
+        <b>共享</b>：把主机授予其他用户协助运维。<br>
+        权限级别：<span class="badge">view 只读</span> <span class="badge info">operate 可操作</span> <span class="badge info">admin 可管理</span><br>
+        <span class="muted">所有分配、回收、转移操作均会写入审计并由 AI 摘要。</span>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let USERS=[], HOSTS=[];
+const PERM={view:['view 只读',''],operate:['operate 可操作','info'],admin:['admin 可管理','info']};
+
+function switchTab(t){
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
+  document.getElementById('tab-users').style.display = t==='users'?'block':'none';
+  document.getElementById('tab-hosts').style.display = t==='hosts'?'block':'none';
+}
+
+async function reloadAll(){ await Promise.all([loadKpis(),loadUsers(),loadHosts()]); }
+
+async function loadKpis(){
+  try{
+    const d=await API.get('/api/dashboard/global');
+    const s=d.summary||{};
+    const risk=(s.Warning||0)+(s.Critical||0);
+    document.getElementById('adminKpis').innerHTML=`
+      ${kpi('用户总数',USERS.length||'…','')}
+      ${kpi('主机总数',s.total||0,'',true)}
+      ${kpi('在线主机',s.online||0,'ok')}
+      ${kpi('风险主机',risk,risk?'crit':'')}`;
+  }catch(e){}
+}
+function kpi(label,val,kind,accent){
+  const col=kind==='crit'?'var(--crit)':(kind==='ok'?'var(--ok)':'var(--ink-1)');
+  return `<div class="kpi ${accent?'accent':''}"><div class="k-label">${label}</div><div class="k-val" style="color:${col}">${val}</div></div>`;
+}
+
+/* ---------------- 用户 ---------------- */
+async function loadUsers(){
+  const d=await API.get('/api/admin/users'); USERS=d.users||[];
+  document.getElementById('userCount').textContent=USERS.length+' 个账号';
+  const tb=document.querySelector('#userTable tbody');
+  tb.innerHTML=USERS.map(u=>`<tr>
+    <td><div class="row"><div class="avatar sm">${F.esc((u.display_name||u.username)[0]).toUpperCase()}</div>
+      <div><b>${F.esc(u.display_name||u.username)}</b><div class="muted tiny">@${F.esc(u.username)}</div></div></div></td>
+    <td>${u.role==='superadmin'?'<span class="badge info">超级管理员</span>':'<span class="badge">运维用户</span>'}</td>
+    <td>${u.active?'<span class="dot ok"></span>启用':'<span class="dot off"></span>停用'}${u.must_change?' <span class="badge warn tiny">待改密</span>':''}</td>
+    <td class="mono">${u.host_count}</td><td class="mono">${u.group_count}</td>
+    <td class="tiny muted">${u.last_login?F.ago(u.last_login):'从未'}</td>
+    <td style="text-align:right">
+      <button class="btn ghost sm" onclick="openUserModal(${u.id})">编辑</button>
+      <button class="btn ghost sm" onclick="resetPw(${u.id})">重置密码</button>
+      <button class="btn danger sm" onclick="delUser(${u.id})">删除</button></td></tr>`).join('');
+}
+
+function openUserModal(id){
+  const u=id?USERS.find(x=>x.id===id):null;
+  const m=modal(`
+    <label class="field"><span>用户名</span><input id="u-name" value="${u?F.esc(u.username):''}" ${u?'disabled':''}></label>
+    <label class="field"><span>显示名</span><input id="u-disp" value="${u?F.esc(u.display_name||''):''}"></label>
+    <label class="field"><span>角色</span><select id="u-role">
+      <option value="user" ${u&&u.role==='user'?'selected':''}>运维用户</option>
+      <option value="superadmin" ${u&&u.role==='superadmin'?'selected':''}>超级管理员</option></select></label>
+    ${u?`<label class="field"><span>状态</span><select id="u-active">
+      <option value="1" ${u.active?'selected':''}>启用</option>
+      <option value="0" ${!u.active?'selected':''}>停用</option></select></label>`:
+      `<label class="field"><span>初始密码（≥6 位，首次登录须改）</span><input type="password" id="u-pw"></label>`}
+  `,{title:u?('编辑用户 · '+u.username):'新建用户',
+     footer:`<button class="btn ghost" onclick="document.getElementById('app-modal').classList.remove('show')">取消</button>
+       <button class="btn primary" onclick="saveUser(${id||0})">保存</button>`});
+}
+
+async function saveUser(id){
+  try{
+    if(id){
+      const body={display_name:document.getElementById('u-disp').value,
+        role:document.getElementById('u-role').value,
+        active:parseInt(document.getElementById('u-active').value)};
+      await API.put('/api/admin/users/'+id,body);
+    }else{
+      const body={username:document.getElementById('u-name').value.trim(),
+        display_name:document.getElementById('u-disp').value.trim(),
+        role:document.getElementById('u-role').value,
+        password:document.getElementById('u-pw').value};
+      if(!body.username){ toast('请输入用户名','err'); return; }
+      if(body.password.length<6){ toast('初始密码至少 6 位','err'); return; }
+      await API.post('/api/admin/users',body);
+    }
+    document.getElementById('app-modal').classList.remove('show');
+    toast('已保存'); reloadAll();
+  }catch(e){ toast(e.message,'err'); }
+}
+
+async function resetPw(id){
+  const u=USERS.find(x=>x.id===id);
+  const m=modal(`<div class="alert warn tiny" style="margin-bottom:14px">为 <b>${F.esc(u.username)}</b> 设置新密码，对方下次登录须立即修改。</div>
+    <label class="field"><span>新密码（≥6 位）</span><input type="password" id="rp-pw"></label>`,
+    {title:'重置密码',footer:`<button class="btn ghost" onclick="document.getElementById('app-modal').classList.remove('show')">取消</button>
+      <button class="btn primary" onclick="doResetPw(${id})">确认重置</button>`});
+}
+async function doResetPw(id){
+  const pw=document.getElementById('rp-pw').value;
+  if(pw.length<6){ toast('新密码至少 6 位','err'); return; }
+  try{ await API.post('/api/admin/users/'+id+'/reset_password',{new_password:pw});
+    document.getElementById('app-modal').classList.remove('show'); toast('密码已重置'); }
+  catch(e){ toast(e.message,'err'); }
+}
+async function delUser(id){
+  const u=USERS.find(x=>x.id===id);
+  if(!confirm('确认删除用户 '+u.username+' ？\n其归属主机将变为未分配，此操作不可撤销。')) return;
+  try{ await API.del('/api/admin/users/'+id); toast('已删除'); reloadAll(); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+/* ---------------- 主机分配 ---------------- */
+async function loadHosts(){
+  const d=await API.get('/api/admin/hosts'); HOSTS=d.hosts||[];
+  document.getElementById('hostCount').textContent=HOSTS.length+' 台主机';
+  const tb=document.querySelector('#hostTable tbody');
+  if(!HOSTS.length){ tb.innerHTML='<tr><td colspan="5"><div class="empty">暂无主机</div></td></tr>'; return; }
+  tb.innerHTML=HOSTS.map(h=>{
+    const shares=(h.access||[]).map(a=>{
+      const p=PERM[a.permission]||[a.permission,''];
+      return `<span class="badge ${p[1]} tiny" title="${p[0]}">${F.esc(a.username)} · ${a.permission}
+        <span class="x-mini" onclick="revoke(${h.id},${a.user_id})">×</span></span>`;
+    }).join(' ')||'<span class="muted tiny">—</span>';
+    return `<tr>
+      <td><b>${F.esc(h.name)}</b><div class="muted tiny mono">${F.esc(h.address||'')}</div></td>
+      <td>${F.esc(h.owner)}</td>
+      <td>${riskBadge(h.risk_level)}</td>
+      <td style="max-width:280px">${shares}</td>
+      <td style="text-align:right">
+        <button class="btn ghost sm" onclick="assignModal(${h.id})">分配</button>
+        <button class="btn ghost sm" onclick="ownerModal(${h.id})">转移归属</button></td></tr>`;
+  }).join('');
+}
+
+function userOptions(sel){
+  return USERS.map(u=>`<option value="${u.id}" ${u.id===sel?'selected':''}>${F.esc(u.display_name||u.username)} (@${F.esc(u.username)})</option>`).join('');
+}
+
+function assignModal(hid){
+  const h=HOSTS.find(x=>x.id===hid);
+  modal(`<div class="tiny muted" style="margin-bottom:12px">把主机 <b>${F.esc(h.name)}</b> 共享给某用户协助运维。</div>
+    <label class="field"><span>选择用户</span><select id="as-user">${userOptions()}</select></label>
+    <label class="field"><span>权限级别</span><select id="as-perm">
+      <option value="view">view · 只读</option>
+      <option value="operate" selected>operate · 可操作 WebSSH</option>
+      <option value="admin">admin · 可管理</option></select></label>`,
+    {title:'分配主机',footer:`<button class="btn ghost" onclick="document.getElementById('app-modal').classList.remove('show')">取消</button>
+      <button class="btn primary" onclick="doAssign(${hid})">确认分配</button>`});
+}
+async function doAssign(hid){
+  try{ await API.post('/api/admin/hosts/'+hid+'/assign',
+    {user_id:parseInt(document.getElementById('as-user').value),permission:document.getElementById('as-perm').value});
+    document.getElementById('app-modal').classList.remove('show'); toast('已分配'); loadHosts(); loadUsers(); }
+  catch(e){ toast(e.message,'err'); }
+}
+async function revoke(hid,uid){
+  if(!confirm('回收该用户对此主机的访问权限？')) return;
+  try{ await API.post('/api/admin/hosts/'+hid+'/revoke',{user_id:uid}); toast('已回收'); loadHosts(); loadUsers(); }
+  catch(e){ toast(e.message,'err'); }
+}
+function ownerModal(hid){
+  const h=HOSTS.find(x=>x.id===hid);
+  modal(`<div class="alert warn tiny" style="margin-bottom:12px">转移归属会变更主机的主人，原主人将失去归属权限。</div>
+    <label class="field"><span>新归属用户</span><select id="ow-user">${userOptions(h.owner_id)}</select></label>`,
+    {title:'转移归属 · '+F.esc(h.name),footer:`<button class="btn ghost" onclick="document.getElementById('app-modal').classList.remove('show')">取消</button>
+      <button class="btn primary" onclick="doOwner(${hid})">确认转移</button>`});
+}
+async function doOwner(hid){
+  try{ await API.post('/api/admin/hosts/'+hid+'/owner',{owner_id:parseInt(document.getElementById('ow-user').value)});
+    document.getElementById('app-modal').classList.remove('show'); toast('归属已转移'); reloadAll(); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+(async()=>{ await loadUsers(); await Promise.all([loadKpis(),loadHosts()]); })();
+</script>
+{% endblock %}

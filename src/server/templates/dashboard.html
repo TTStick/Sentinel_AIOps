@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}总览仪表盘{% endblock %}
+{% block crumb %}OVERVIEW{% endblock %}
+{% block heading %}{% if is_admin %}全局总览仪表盘{% else %}我的运维仪表盘{% endif %}{% endblock %}
+{% block actions %}<button class="btn ghost sm" onclick="loadAll()">刷新</button>{% endblock %}
+{% block head %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>{% endblock %}
+
+{% block content %}
+<div class="grid g-4" id="kpis"></div>
+
+<div class="grid g-3" style="margin-top:16px">
+  <div class="card" style="grid-column:span 2">
+    <div class="card-h"><h3>异常趋势（近 24 小时）</h3><span class="sub" id="trend-note"></span></div>
+    <div class="card-b"><canvas id="trendChart" height="92"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h3>风险分布</h3></div>
+    <div class="card-b" style="display:grid;place-items:center"><canvas id="riskChart" height="180"></canvas></div>
+  </div>
+</div>
+
+<div class="grid g-2" style="margin-top:16px">
+  <div class="card">
+    <div class="card-h"><h3>负载排行</h3><span class="sub">综合负载 Top</span></div>
+    <div class="card-b" style="padding:0"><table id="topLoaded"><tbody><tr><td class="empty">加载中…</td></tr></tbody></table></div>
+  </div>
+  <div class="ai-card">
+    <div class="ai-h"><span class="spark"></span>近期 AI 事件摘要</div>
+    <div class="card-b" id="aiEvents" style="display:flex;flex-direction:column;gap:12px"><div class="empty">加载中…</div></div>
+  </div>
+</div>
+
+{% if is_admin %}
+<div class="card" style="margin-top:16px">
+  <div class="card-h"><h3>用户活跃概览</h3><span class="sub">管理员视图</span></div>
+  <div class="card-b" style="padding:0"><table id="userActivity"><tbody></tbody></table></div>
+</div>
+{% else %}
+<div class="card" style="margin-top:16px">
+  <div class="card-h"><h3>我的近期操作</h3></div>
+  <div class="card-b" style="padding:0"><table id="myActions"><tbody></tbody></table></div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+chartDefaults();
+let trendChart, riskChart;
+const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+
+async function loadAll(){
+  const d = await API.get('/api/dashboard/global');
+  renderKPIs(d.summary);
+  renderTrend(d.anomaly_trend);
+  renderRisk(d.risk_pie);
+  renderTopLoaded(d.top_loaded);
+  renderAiEvents(d.ai_events);
+  if(IS_ADMIN) renderUserActivity(d.user_activity);
+  else loadUserBoard();
+}
+
+function renderKPIs(s){
+  const cards = [
+    {l:'主机总数', v:s.total, sub:`在线 ${s.online} · 离线 ${s.offline}`, accent:true},
+    {l:'平均健康度', v:s.avg_health, sub:'0–100 越高越好'},
+    {l:'警告主机', v:s.Warning||0, sub:'需关注'},
+    {l:'严重主机', v:s.Critical||0, sub:'需立即处理'},
+  ];
+  document.getElementById('kpis').innerHTML = cards.map(c=>`
+    <div class="kpi ${c.accent?'accent':''}">
+      <div class="k-label">${c.l}</div>
+      <div class="k-val">${c.v}</div>
+      <div class="k-sub">${c.sub}</div>
+    </div>`).join('');
+}
+
+function renderTrend(t){
+  document.getElementById('trend-note').textContent =
+    `趋势：${({rising:'上升',falling:'下降',flat:'平稳'})[t.trend]||'—'} · 下一时段预估 ${t.next_estimate} 起`;
+  const labels=t.buckets.map(b=>F.time(b.t).slice(0,5)??'');
+  const data=t.buckets.map(b=>b.count);
+  const crit=t.buckets.map(b=>b.crit);
+  if(trendChart) trendChart.destroy();
+  trendChart=new Chart(document.getElementById('trendChart'),{
+    type:'bar',
+    data:{labels,datasets:[
+      {label:'异常数',data,backgroundColor:'rgba(181,101,72,.30)',borderColor:'#b56548',borderWidth:1,borderRadius:3},
+      {label:'其中严重',data:crit,backgroundColor:'rgba(239,68,68,.5)',borderColor:'#ef4444',borderWidth:1,borderRadius:3},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0}}},
+      plugins:{legend:{position:'bottom'}}}
+  });
+}
+
+function renderRisk(pie){
+  if(riskChart) riskChart.destroy();
+  riskChart=new Chart(document.getElementById('riskChart'),{
+    type:'doughnut',
+    data:{labels:pie.map(p=>p.name),datasets:[{data:pie.map(p=>p.value),
+      backgroundColor:pie.map(p=>p.color),borderColor:'#0c1220',borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{position:'bottom'}}}
+  });
+}
+
+function renderTopLoaded(rows){
+  const t=document.querySelector('#topLoaded tbody');
+  if(!rows.length){ t.innerHTML='<tr><td class="empty">暂无数据</td></tr>'; return; }
+  t.innerHTML=`<tr><th>主机</th><th>状态</th><th>CPU</th><th>内存</th><th>磁盘</th><th>健康</th></tr>`+
+    rows.map(r=>`<tr style="cursor:pointer" onclick="location.href='/hosts/${r.id}'">
+      <td><b>${F.esc(r.name)}</b></td>
+      <td>${riskBadge(r.risk_level)}</td>
+      <td class="mono">${F.pct(r.cpu)}</td>
+      <td class="mono">${F.pct(r.memory_pct)}</td>
+      <td class="mono">${F.pct(r.disk_pct)}</td>
+      <td class="mono" style="color:${healthColor(r.health)}">${F.num(r.health)}</td>
+    </tr>`).join('');
+}
+
+function renderAiEvents(ev){
+  const box=document.getElementById('aiEvents');
+  if(!ev.length){ box.innerHTML='<div class="empty">暂无 AI 摘要事件</div>'; return; }
+  box.innerHTML=ev.map(e=>`
+    <div style="border-left:2px solid var(--signal);padding:2px 0 2px 12px">
+      <div class="row tiny muted" style="justify-content:space-between">
+        <span>${F.esc(e.username)} · ${F.esc(e.action)}</span><span>${F.ago(e.ts)}</span></div>
+      <div style="font-size:13px;margin-top:3px;color:var(--ink)">${F.esc(e.summary)}</div>
+    </div>`).join('');
+}
+
+function renderUserActivity(rows){
+  const t=document.querySelector('#userActivity tbody');
+  t.innerHTML=`<tr><th>用户</th><th>角色</th><th>主机数</th><th>最近登录</th></tr>`+
+    rows.map(u=>`<tr><td><b>${F.esc(u.username)}</b></td>
+      <td>${u.role==='superadmin'?'<span class="badge violet">超级管理员</span>':'<span class="badge">运维用户</span>'}</td>
+      <td class="mono">${u.hosts}</td><td class="muted tiny">${F.ago(u.last_login)}</td></tr>`).join('');
+}
+
+async function loadUserBoard(){
+  const d=await API.get('/api/dashboard/user');
+  const t=document.querySelector('#myActions tbody');
+  const rows=d.recent_actions;
+  if(!rows||!rows.length){ t.innerHTML='<tr><td class="empty">暂无操作记录</td></tr>'; return; }
+  t.innerHTML=`<tr><th>时间</th><th>操作</th><th>对象</th><th>AI 摘要</th></tr>`+
+    rows.map(a=>`<tr><td class="muted tiny">${F.time(a.ts)}</td><td>${F.esc(a.action)}</td>
+      <td>${F.esc(a.target||'—')}</td><td class="tiny">${F.esc(a.summary||'—')}</td></tr>`).join('');
+}
+
+loadAll();
+</script>
+{% endblock %}

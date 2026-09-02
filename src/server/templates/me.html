@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}个人中心{% endblock %}
+{% block crumb %}账户 · PROFILE{% endblock %}
+{% block heading %}个人中心{% endblock %}
+
+{% block content %}
+<div style="display:grid;grid-template-columns:340px 1fr;gap:16px">
+  <!-- 左：资料卡 -->
+  <div>
+    <div class="card pad" style="margin-bottom:16px;text-align:center">
+      <div class="avatar" style="width:64px;height:64px;font-size:26px;margin:6px auto 14px">{{ user.display_name[0]|upper }}</div>
+      <div style="font-size:18px;font-weight:600">{{ user.display_name }}</div>
+      <div class="muted tiny" style="margin-top:4px">@{{ user.username }}</div>
+      <div style="margin-top:12px"><span class="badge {{ 'info' if is_admin else '' }}">{{ '超级管理员' if is_admin else '运维用户' }}</span></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>账户信息</h3></div>
+      <div class="card-b">
+        <div class="row tiny" style="justify-content:space-between;padding:6px 0"><span class="muted">用户 ID</span><b class="mono">#{{ user.id }}</b></div>
+        <div class="row tiny" style="justify-content:space-between;padding:6px 0"><span class="muted">角色</span><b>{{ '超级管理员' if is_admin else '运维用户' }}</b></div>
+        <div class="row tiny" style="justify-content:space-between;padding:6px 0"><span class="muted">上次登录</span><b id="lastLogin">—</b></div>
+        <div class="row tiny" style="justify-content:space-between;padding:6px 0"><span class="muted">LLM 引擎</span><span class="badge info">{{ llm_provider }}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：修改密码 + 近期操作 -->
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-h"><h3>修改密码</h3><span class="sub muted tiny">建议定期更换，至少 6 位</span></div>
+      <div class="card-b" style="max-width:420px">
+        <label class="field"><span>原密码</span><input type="password" id="oldpw"></label>
+        <label class="field"><span>新密码</span><input type="password" id="newpw"></label>
+        <label class="field"><span>确认新密码</span><input type="password" id="newpw2"></label>
+        <button class="btn primary" onclick="changePw()" style="margin-top:6px">保存新密码</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h3>我的近期操作</h3>
+        <span class="sub"><a class="link tiny" href="/audit">查看完整审计 →</a></span></div>
+      <div class="card-b" style="padding:0"><table id="myActs"><tbody>
+        <tr><td><div class="empty">加载中…</div></td></tr></tbody></table></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function changePw(){
+  const o=document.getElementById('oldpw').value, n=document.getElementById('newpw').value, n2=document.getElementById('newpw2').value;
+  if(n!==n2){ toast('两次输入的新密码不一致','err'); return; }
+  if(n.length<6){ toast('新密码至少 6 位','err'); return; }
+  try{
+    await API.post('/api/me/password',{old_password:o,new_password:n});
+    toast('密码已更新');
+    ['oldpw','newpw','newpw2'].forEach(id=>document.getElementById(id).value='');
+  }catch(e){ toast(e.message,'err'); }
+}
+
+const RB={low:['低','ok'],medium:['中','warn'],high:['高','crit']};
+async function loadActs(){
+  try{
+    const d=await API.get('/api/dashboard/user');
+    const rows=d.recent_actions||[];
+    const tb=document.querySelector('#myActs tbody');
+    if(!rows.length){ tb.innerHTML='<tr><td><div class="empty">暂无操作记录</div></td></tr>'; return; }
+    tb.innerHTML=rows.map(a=>{
+      const rb=RB[a.risk]||['',''];
+      return `<tr><td>
+        <div class="row tiny"><b>${F.esc(a.action)}</b>${a.target?`<span class="muted"> · ${F.esc(a.target)}</span>`:''}
+          <span class="sp"></span>${rb[0]?`<span class="badge ${rb[1]}">${rb[0]}风险</span>`:''}
+          <span class="muted" style="margin-left:8px">${F.ago(a.ts)}</span></div>
+        ${a.summary?`<div class="tiny muted" style="margin-top:3px">${F.esc(a.summary)}</div>`:''}</td></tr>`;
+    }).join('');
+  }catch(e){ document.querySelector('#myActs tbody').innerHTML='<tr><td><div class="empty">加载失败</div></td></tr>'; }
+}
+loadActs();
+</script>
+{% endblock %}

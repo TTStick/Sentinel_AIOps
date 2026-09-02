@@ -1,0 +1,12 @@
+# 服务端依赖（Python 3.10+）
+fastapi>=0.110
+uvicorn[standard]>=0.27
+jinja2>=3.1
+python-multipart>=0.0.9
+paramiko>=3.4
+requests>=2.31
+websockets>=12.0
+
+# ---- Agent 端（部署到被监控主机时安装）----
+# psutil>=5.9
+# requests>=2.31

@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}主机详情{% endblock %}
+{% block crumb %}HOST · #{{ host_id }}{% endblock %}
+{% block heading %}<span id="hostName">主机详情</span>{% endblock %}
+{% block actions %}
+<button class="btn ghost sm" onclick="refreshForecast()">刷新预测</button>
+<button class="btn ghost sm" onclick="proposeInvestigation()">AI 调查</button>
+<button class="btn danger sm" onclick="deleteHost()">删除主机</button>
+<a class="btn primary sm" id="sshBtn" href="#">打开 WebSSH</a>
+{% endblock %}
+{% block head %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>{% endblock %}
+
+{% block content %}
+<div id="hostHead" class="card pad" style="margin-bottom:16px"><div class="empty">加载中…</div></div>
+
+<div style="display:grid;grid-template-columns:1fr 360px;gap:16px">
+  <div>
+    <!-- 小小仪表盘 -->
+    <div class="grid g-3" id="gauges" style="margin-bottom:16px"></div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-h"><h3>指标趋势</h3>
+        <span class="sub"><select id="metricSel" onchange="drawMetric()" style="width:auto;padding:4px 8px">
+          <option value="cpu">CPU</option><option value="memory_pct">内存</option>
+          <option value="disk_pct">磁盘</option><option value="load1">负载</option>
+          <option value="iowait">IO Wait</option></select></span></div>
+      <div class="card-b"><canvas id="metricChart" height="86"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h3>异常事件</h3></div>
+      <div class="card-b" style="padding:0"><table id="anomTable"><tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="ai-card" style="margin-bottom:16px">
+      <div class="ai-h"><span class="spark"></span>AI 根因分析</div>
+      <div class="card-b" id="aiRcaBox"><div class="empty">加载中…</div></div>
+    </div>
+
+    <div class="ai-card" style="margin-bottom:16px">
+      <div class="ai-h"><span class="spark"></span>容量与耗尽预测</div>
+      <div class="card-b" id="forecastBox"><div class="empty">暂无预测</div></div>
+    </div>
+
+    <div class="ai-card" style="margin-bottom:16px">
+      <div class="ai-h"><span class="spark"></span>AI 调查记录</div>
+      <div class="card-b" id="invBox"><div class="empty">尚无调查</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h3>近期 SSH 会话</h3></div>
+      <div class="card-b" id="sshBox" style="padding:0"><table><tbody id="sshRows"></tbody></table></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+chartDefaults();
+const HID={{ host_id }};
+let DETAIL=null, metricChart=null;
+document.getElementById('sshBtn').href='/webssh/'+HID;
+
+async function load(){
+  DETAIL=await API.get('/api/hosts/'+HID);
+  document.getElementById('hostName').textContent=DETAIL.name;
+  renderHead(); renderGauges(); drawMetric(); renderAnom(); renderForecast(); renderSessions();
+  renderAiRca(); maybePollRca();
+  loadInvestigations();
+}
+
+function renderHead(){
+  const h=DETAIL, m=h.last_metrics||{};
+  document.getElementById('hostHead').innerHTML=`
+    <div class="row" style="gap:18px">
+      ${ring(h.health)}
+      <div>
+        <div class="row" style="gap:10px">${onlineDot(h.online)}<b style="font-size:17px">${F.esc(h.name)}</b>${riskBadge(h.risk_level)}</div>
+        <div class="muted tiny mono" style="margin-top:5px">${F.esc(h.ssh_user)}@${F.esc(h.address||'—')}:${h.ssh_port} · ${F.esc(h.os||'未知系统')}</div>
+        <div class="muted tiny" style="margin-top:3px">最近上报：${F.ago(h.last_seen)} · 综合负载 ${F.num(h.composite)}</div>
+      </div>
+      <span class="sp"></span>
+      <div style="text-align:right">
+        ${h.agent_token?`<div class="tiny muted">Agent Token</div><div class="mono tiny" style="max-width:240px;word-break:break-all;color:var(--ink-2)">${F.esc(h.agent_token)}</div>`:''}
+      </div>
+    </div>`;
+}
+
+function renderGauges(){
+  const m=DETAIL.last_metrics||{};
+  const items=[
+    ['CPU','cpu',m.cpu],['内存','memory_pct',m.memory_pct],['磁盘','disk_pct',m.disk_pct],
+    ['负载 1m','load1',m.load1,true],['IO Wait','iowait',m.iowait],['进程数','proc_total',m.proc_total,true],
+  ];
+  document.getElementById('gauges').innerHTML=items.map(([label,key,v,raw])=>{
+    const disp=raw?(v==null?'—':v):(v==null?'—':F.pct(v));
+    let col='var(--signal)'; if(!raw&&v!=null){ if(v>=90)col='var(--crit)';else if(v>=75)col='var(--warn)';else col='var(--ok)'; }
+    const bar=(!raw&&v!=null)?`<div style="height:5px;border-radius:4px;background:var(--bg-3);margin-top:9px;overflow:hidden">
+      <div style="height:100%;width:${Math.min(v,100)}%;background:${col}"></div></div>`:'';
+    return `<div class="kpi"><div class="k-label">${label}</div>
+      <div class="k-val" style="color:${col};font-size:24px">${disp}</div>${bar}</div>`;
+  }).join('');
+}
+
+function drawMetric(){
+  const key=document.getElementById('metricSel').value;
+  const hist=DETAIL.metrics_history||[];
+  const labels=hist.map(p=>F.time(p.ts).slice(0,8));
+  const data=hist.map(p=>p[key]);
+  if(metricChart) metricChart.destroy();
+  metricChart=new Chart(document.getElementById('metricChart'),{
+    type:'line',
+    data:{labels,datasets:[{data,label:document.getElementById('metricSel').selectedOptions[0].text,
+      borderColor:'#b56548',backgroundColor:'rgba(181,101,72,.10)',fill:true,tension:.3,pointRadius:0,borderWidth:1.8}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{maxTicksLimit:8}},y:{beginAtZero:true}},
+      plugins:{legend:{display:false}}}
+  });
+}
+
+function renderAnom(){
+  const t=document.querySelector('#anomTable tbody');
+  const rows=DETAIL.anomalies||[];
+  if(!rows.length){ t.innerHTML='<tr><td class="empty">近期无异常</td></tr>'; return; }
+  t.innerHTML=`<tr><th>时间</th><th>指标</th><th>级别</th><th>来源</th><th>说明</th></tr>`+
+    rows.map(a=>`<tr><td class="muted tiny">${F.time(a.ts)}</td>
+      <td class="mono">${F.esc(a.metric||'—')}</td>
+      <td><span class="badge ${a.severity==='Critical'?'crit':'warn'}">${a.severity==='Critical'?'严重':'警告'}</span></td>
+      <td class="tiny muted">${({threshold:'红线',baseline:'基线',log:'日志',ai:'AI'})[a.source]||a.source}</td>
+      <td class="tiny">${F.esc(a.message||'')}</td></tr>`).join('');
+}
+
+function renderForecast(){
+  const box=document.getElementById('forecastBox');
+  const fs=DETAIL.forecasts||[];
+  if(!fs.length){ box.innerHTML='<div class="empty">暂无预测（需更多历史样本）</div>'; return; }
+  const LABEL={disk_pct:'磁盘',memory_pct:'内存',swap_pct:'Swap'};
+  box.innerHTML=fs.map(f=>`
+    <div style="margin-bottom:12px">
+      <div class="row tiny"><b>${LABEL[f.metric]||f.metric}</b><span class="sp"></span>
+        <span class="mono muted">当前 ${f.current}% · ${f.slope>0?'+':''}${f.slope}%/天</span></div>
+      <div class="tiny" style="margin-top:4px;color:${f.eta_seconds&&f.eta_seconds<7*86400?'var(--warn)':'var(--ink-2)'}">${F.esc(f.note)}</div>
+    </div>`).join('');
+}
+
+function renderSessions(){
+  const t=document.getElementById('sshRows');
+  const rows=DETAIL.ssh_sessions||[];
+  if(!rows.length){ t.innerHTML='<tr><td class="empty">暂无会话</td></tr>'; return; }
+  t.innerHTML=rows.map(s=>`<tr style="cursor:pointer" onclick="location.href='/audit?session=${s.id}'">
+    <td class="tiny">${F.esc(s.username)}</td>
+    <td class="muted tiny">${F.time(s.started_at)}</td>
+    <td class="mono tiny">${s.cmd_count} 条</td>
+    <td>${s.ai_summary?'<span class="badge info">已摘要</span>':'<span class="badge">—</span>'}</td></tr>`).join('');
+}
+
+async function loadInvestigations(){
+  const d=await API.get('/api/ai/investigations?host_id='+HID);
+  const box=document.getElementById('invBox');
+  const rows=d.investigations||[];
+  if(!rows.length){ box.innerHTML='<div class="empty">尚无调查，点击右上「AI 调查」发起</div>'; return; }
+  const ST={proposed:['待批准','warn'],approved:['已批准','info'],running:['执行中','info'],
+    done:['已完成','ok'],rejected:['已驳回',''],failed:['失败','crit']};
+  box.innerHTML=rows.map(r=>{
+    const st=ST[r.status]||[r.status,''];
+    return `<div style="border-left:2px solid var(--signal);padding:3px 0 3px 12px;margin-bottom:11px;cursor:pointer" onclick="viewInv(${r.id})">
+      <div class="row tiny"><span class="badge ${st[1]}">${st[0]}</span><span class="sp"></span><span class="muted">${F.ago(r.created_at)}</span></div>
+      <div class="tiny" style="margin-top:4px">${F.esc(r.summary||'诊断计划已生成，等待人工批准执行')}</div></div>`;
+  }).join('');
+}
+
+let _genTick=null;
+function clearGen(){ if(_genTick){ clearInterval(_genTick); _genTick=null; } }
+
+async function proposeInvestigation(){
+  const t0=Date.now();
+  modal(`<div class="row" style="gap:12px;padding:6px 0"><span class="spinner"></span>
+    <div><div>AI 正在生成只读诊断计划…</div>
+    <div class="tiny muted" style="margin-top:4px">强力模型推理中 · 已用时 <span id="genSec">0</span>s</div></div></div>`,
+    {title:'AI 调查 · 生成中', footer:''});
+  clearGen();
+  _genTick=setInterval(()=>{ const el=document.getElementById('genSec'); if(el) el.textContent=Math.floor((Date.now()-t0)/1000); },1000);
+  try{
+    const r=await API.post('/api/ai/investigate/'+HID+'/propose');
+    clearGen();
+    await viewInv(r.investigation_id);
+    loadInvestigations();
+  }catch(e){ clearGen(); document.getElementById('app-modal').classList.remove('show'); toast(e.message,'err'); }
+}
+
+async function viewInv(id){
+  const inv=await API.get('/api/ai/investigate/'+id);
+  renderInv(inv);
+  if(inv.status==='running' || inv.status==='approved') pollInv(id, true);
+}
+
+function renderInv(inv){
+  clearGen();
+  const plan=inv.plan||{};
+  const steps=(plan.steps||[]).map(s=>`<div class="mono tiny" style="padding:6px 0;border-bottom:1px solid var(--line-soft)">
+    <span class="risk-safe">$</span> ${F.esc(s.cmd)} <span class="muted">— ${F.esc(s.purpose||'')}</span></div>`).join('');
+  const transcript=(inv.transcript||[]).map(t=>`<div style="margin-bottom:10px">
+    <div class="mono tiny risk-safe">$ ${F.esc(t.cmd)}</div>
+    <pre class="mono tiny" style="background:var(--bg-3);border-radius:7px;padding:8px;margin:4px 0;max-height:160px;overflow:auto;white-space:pre-wrap;color:var(--ink-2)">${F.esc((t.output||'').slice(0,1200))||'(无输出)'}</pre></div>`).join('');
+  const remediation=(inv.remediation||[]).map(r=>`<div class="row tiny" style="padding:6px 0;border-bottom:1px solid var(--line-soft)">
+    <span class="mono ${cmdRiskClass(r.risk)}">${F.esc(r.cmd)}</span><span class="sp"></span>
+    <button class="btn sm danger" onclick="remediate(${inv.id},'${encodeURIComponent(r.cmd)}')">批准执行</button></div>
+    <div class="tiny muted" style="margin:-4px 0 8px">${F.esc(r.why||'')}</div>`).join('');
+
+  let foot='';
+  if(inv.status==='proposed') foot=`<button class="btn ghost" onclick="rejectInv(${inv.id})">驳回</button>
+    <button class="btn primary" onclick="approveInv(${inv.id})">人工批准并执行（只读）</button>`;
+
+  const runBanner=(inv.status==='running'||inv.status==='approved')
+    ? `<div class="row tiny" style="margin-bottom:12px;gap:10px"><span class="spinner"></span><span class="muted">正在按计划执行只读诊断并生成结论…</span></div>` : '';
+
+  modal(`
+    ${runBanner}
+    <div class="alert info tiny" style="margin-bottom:14px">假设：${F.esc(plan.hypothesis||'—')}</div>
+    <div class="tiny muted" style="margin-bottom:6px">诊断步骤（均为只读，需人工批准后执行）</div>
+    <div style="margin-bottom:14px">${steps||'<div class="muted tiny">无步骤</div>'}</div>
+    ${inv.findings?`<div class="divider"></div><div class="tiny muted">AI 根因</div><div style="margin:6px 0 14px">${F.esc(inv.findings)}</div>`:''}
+    ${transcript?`<div class="tiny muted">执行记录</div>${transcript}`:''}
+    ${remediation?`<div class="divider"></div><div class="alert warn tiny" style="margin-bottom:10px">以下修复命令有风险，需逐条二次人工批准</div>${remediation}`:''}
+  `,{title:'AI 调查 #'+inv.id+' · '+inv.status, footer:foot});
+}
+
+async function approveInv(id){
+  try{ await API.post('/api/ai/investigate/'+id+'/approve');
+    toast('已批准，后台执行中…');
+    pollInv(id, true);
+  }catch(e){ toast(e.message,'err'); }
+}
+
+function pollInv(id, reopen){
+  if(window._invPoll) clearInterval(window._invPoll);
+  let tries=0;
+  window._invPoll=setInterval(async ()=>{
+    tries++;
+    let inv;
+    try{ inv=await API.get('/api/ai/investigate/'+id); }
+    catch(e){ clearInterval(window._invPoll); window._invPoll=null; return; }
+    loadInvestigations();
+    const open=document.getElementById('app-modal')?.classList.contains('show');
+    if(reopen && open) renderInv(inv);
+    if(['done','failed','rejected'].includes(inv.status) || tries>40){
+      clearInterval(window._invPoll); window._invPoll=null;
+      if(inv.status==='done') toast('AI 调查完成');
+      else if(inv.status==='failed') toast('AI 调查执行失败','err');
+    }
+  },3000);
+}
+
+/* ---------- AI 根因分析（含进度） ---------- */
+let _rcaTick=null, _rcaPoll=null;
+function renderAiRca(){
+  const box=document.getElementById('aiRcaBox');
+  if(!box) return;
+  const r=DETAIL.ai_rca;
+  if(_rcaTick){ clearInterval(_rcaTick); _rcaTick=null; }
+  if(r && r.status==='running'){
+    const started=r.started_at||Math.floor(Date.now()/1000);
+    const paint=()=>{ const sec=Math.max(0,Math.floor(Date.now()/1000-started));
+      box.innerHTML=`<div class="row" style="gap:11px"><span class="spinner"></span>
+        <div><div>AI 正在分析中…</div>
+        <div class="tiny muted" style="margin-top:3px">强力模型推理中 · 已用时 ${sec}s</div></div></div>`; };
+    paint(); _rcaTick=setInterval(paint,1000);
+    return;
+  }
+  if(r && r.status==='done'){
+    const rk={High:['高危','crit'],Medium:['中等','warn'],Low:['低风险','ok']}[r.risk_level]||[r.risk_level||'—','info'];
+    const sols=(r.solutions||[]).map(s=>`<li>${F.esc(s)}</li>`).join('');
+    box.innerHTML=`
+      <div class="row tiny" style="margin-bottom:9px"><span class="badge ${rk[1]}">${rk[0]}</span>
+        <span class="sp"></span><span class="muted">${F.ago(r.finished_at)}</span></div>
+      <div style="margin-bottom:9px">${F.esc(r.summary||'')}</div>
+      ${r.root_cause?`<div class="tiny muted">根因</div><div class="tiny" style="margin:3px 0 10px">${F.esc(r.root_cause)}</div>`:''}
+      ${sols?`<div class="tiny muted">建议处置</div><ul class="tiny" style="margin:4px 0 12px;padding-left:18px;line-height:1.9">${sols}</ul>`:''}
+      <button class="btn ghost sm" onclick="runAnalyze()">重新分析</button>`;
+    return;
+  }
+  box.innerHTML=`<div class="tiny muted" style="margin-bottom:11px">尚未生成根因分析。</div>
+    <button class="btn primary sm" onclick="runAnalyze()">生成 AI 根因分析</button>`;
+}
+
+async function runAnalyze(){
+  try{
+    DETAIL.ai_rca={status:'running',started_at:Math.floor(Date.now()/1000)};
+    renderAiRca();
+    await API.post('/api/hosts/'+HID+'/analyze');
+    maybePollRca(true);
+  }catch(e){ toast(e.message,'err'); }
+}
+
+function maybePollRca(force){
+  const r=DETAIL.ai_rca;
+  if(!(force || (r && r.status==='running'))) return;
+  if(_rcaPoll) return;
+  let tries=0;
+  _rcaPoll=setInterval(async ()=>{
+    tries++;
+    try{
+      const d=await API.get('/api/hosts/'+HID);
+      DETAIL.ai_rca=d.ai_rca;
+      renderAiRca();
+      if(!d.ai_rca || d.ai_rca.status!=='running' || tries>40){
+        clearInterval(_rcaPoll); _rcaPoll=null;
+        if(d.ai_rca && d.ai_rca.status==='done'){ DETAIL=d; renderAnom(); toast('AI 根因分析完成'); }
+      }
+    }catch(e){ clearInterval(_rcaPoll); _rcaPoll=null; }
+  },3000);
+}
+async function rejectInv(id){
+  try{ await API.post('/api/ai/investigate/'+id+'/reject'); toast('已驳回');
+    document.getElementById('app-modal').classList.remove('show'); loadInvestigations();
+  }catch(e){ toast(e.message,'err'); }
+}
+async function remediate(id,cmd){
+  cmd=decodeURIComponent(cmd);
+  if(!confirm('确认在目标主机执行修复命令？\n\n'+cmd)) return;
+  try{ const r=await API.post('/api/ai/investigate/'+id+'/remediate',{cmd}); toast('已执行（退出码 '+(r.result?.exit_code)+'）'); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+async function refreshForecast(){
+  try{ await API.post('/api/hosts/'+HID+'/forecast'); toast('预测已刷新'); load(); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+async function deleteHost(){
+  const nm=(typeof DETAIL!=='undefined' && DETAIL && DETAIL.name) ? DETAIL.name
+           : (document.getElementById('hostName')?.textContent||'该主机').trim();
+  if(!confirm(`确认删除主机「${nm}」？\n此操作不可恢复，将一并清除其指标、异常、基线与预测数据。`)) return;
+  try{
+    await API.del('/api/hosts/'+HID);
+    toast('主机已删除');
+    setTimeout(()=>location.href='/hosts', 600);
+  }catch(e){ toast(e.message,'err'); }
+}
+
+load();
+</script>
+{% endblock %}

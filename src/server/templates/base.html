@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}{{ app_name }}{% endblock %} · {{ app_name }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+{% block head %}{% endblock %}
+</head>
+<body>
+<div class="shell">
+  <!-- ============ 左栏 ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"></div>
+      <div><b>AIZ 运维台</b><span>安心值守 · 智能运维</span></div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-label">监控</div>
+      <a href="/" data-page="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+        总览仪表盘</a>
+      <a href="/hosts" data-page="hosts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="6" rx="1"/><rect x="2" y="13" width="20" height="6" rx="1"/><path d="M6 6h.01M6 16h.01"/></svg>
+        我的主机</a>
+
+      <div class="nav-label">智能运维</div>
+      <a href="/investigations" data-page="investigations">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        AI 调查员</a>
+      <a href="/chatops" data-page="chatops">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        ChatOps 问答</a>
+      <a href="/audit" data-page="audit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        审计回溯</a>
+
+      {% if is_admin %}
+      <div class="nav-label">管理</div>
+      <a href="/admin" data-page="admin">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/></svg>
+        超级管理员</a>
+      <a href="/settings" data-page="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        模型设置</a>
+      {% endif %}
+    </nav>
+
+    <div class="side-foot">
+      <div class="row tiny muted" style="padding:0 10px 8px;justify-content:space-between">
+        <span>LLM</span><span class="badge info">{{ llm_provider }}</span>
+      </div>
+      <a href="/me" class="side-user">
+        <div class="avatar">{{ user.display_name[0]|upper }}</div>
+        <div class="meta"><b>{{ user.display_name }}</b><span>{{ '超级管理员' if is_admin else '运维用户' }}</span></div>
+      </a>
+      <button class="btn ghost sm" style="width:100%;margin-top:8px;justify-content:center" onclick="logout()">退出登录</button>
+    </div>
+  </aside>
+
+  <!-- ============ 右栏 ============ -->
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <div class="crumb">{% block crumb %}AIZ OPS{% endblock %}</div>
+        <h1>{% block heading %}{{ app_name }}{% endblock %}</h1>
+      </div>
+      <div class="spacer"></div>
+      {% block actions %}{% endblock %}
+    </header>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+{% if user.must_change %}
+<div class="modal-mask show" id="forcepw">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-h"><h3>首次登录：请修改密码</h3></div>
+    <div class="modal-b">
+      <div class="alert warn" style="margin-bottom:16px">为保障安全，使用默认/初始密码的账号必须先设置新密码。</div>
+      <label class="field"><span>原密码</span><input type="password" id="fp-old"></label>
+      <label class="field"><span>新密码（至少 6 位）</span><input type="password" id="fp-new"></label>
+      <label class="field"><span>确认新密码</span><input type="password" id="fp-new2"></label>
+    </div>
+    <div class="modal-f"><button class="btn primary" onclick="forceChangePw()">保存并继续</button></div>
+  </div>
+</div>
+<script>
+async function forceChangePw(){
+  const o=document.getElementById('fp-old').value, n=document.getElementById('fp-new').value, n2=document.getElementById('fp-new2').value;
+  if(n!==n2){ toast('两次输入的新密码不一致','err'); return; }
+  if(n.length<6){ toast('新密码至少 6 位','err'); return; }
+  try{ await API.post('/api/me/password',{old_password:o,new_password:n}); toast('密码已更新'); setTimeout(()=>location.reload(),700); }
+  catch(e){ toast(e.message,'err'); }
+}
+</script>
+{% endif %}
+
+<script src="/static/app.js"></script>
+<script>setActiveNav('{{ page }}');</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

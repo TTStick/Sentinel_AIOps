@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}ChatOps 问答{% endblock %}
+{% block crumb %}智能运维 · CHATOPS{% endblock %}
+{% block heading %}ChatOps 自然语言问答{% endblock %}
+
+{% block content %}
+<div style="display:grid;grid-template-columns:1fr 300px;gap:16px">
+  <div class="card" style="display:flex;flex-direction:column;height:calc(100vh - 168px)">
+    <div class="card-h"><h3>对话</h3>
+      <span class="sub muted tiny">基于你可见主机的实时指标与异常作答</span></div>
+    <div class="card-b" id="chatLog" style="flex:1;overflow:auto;padding:18px">
+      <div class="chat-row ai">
+        <div class="chat-av">AI</div>
+        <div class="chat-bubble">你好，我可以基于你管理的主机回答机群问题。试着问我：<br>
+          <span class="muted tiny">「哪些主机现在有风险？」「磁盘最满的是哪台？」「最近有哪些异常？」</span></div>
+      </div>
+    </div>
+    <div class="card-b" style="border-top:1px solid var(--line);padding:12px 14px">
+      <div class="row" style="gap:8px">
+        <input id="q" placeholder="输入你的问题，回车发送…" onkeydown="if(event.key==='Enter')send()" style="flex:1">
+        <button class="btn primary" id="sendBtn" onclick="send()">发送</button>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-h"><h3>机群速览</h3></div>
+      <div class="card-b" id="fleetBox"><div class="empty tiny">加载中…</div></div>
+    </div>
+    <div class="ai-card">
+      <div class="ai-h"><span class="spark"></span>常见问题</div>
+      <div class="card-b" id="presets"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PRESETS=['哪些主机当前处于风险状态？','磁盘使用率最高的主机是哪台？',
+  '最近出现了哪些异常？','有没有主机已经离线？','整体机群健康状况如何？'];
+
+function render(){
+  document.getElementById('presets').innerHTML=PRESETS.map(p=>
+    `<div class="preset" onclick="ask('${F.esc(p)}')">${F.esc(p)}</div>`).join('');
+}
+
+function add(role, html){
+  const log=document.getElementById('chatLog');
+  const row=document.createElement('div');
+  row.className='chat-row '+role;
+  row.innerHTML=`<div class="chat-av">${role==='ai'?'AI':'我'}</div><div class="chat-bubble">${html}</div>`;
+  log.appendChild(row); log.scrollTop=log.scrollHeight;
+  return row;
+}
+
+function ask(q){ document.getElementById('q').value=q; send(); }
+
+async function send(){
+  const inp=document.getElementById('q'); const q=inp.value.trim();
+  if(!q) return;
+  inp.value=''; document.getElementById('sendBtn').disabled=true;
+  add('me', F.esc(q));
+  const wait=add('ai','<span class="typing">分析机群证据中…</span>');
+  try{
+    const d=await API.post('/api/ai/chatops',{question:q});
+    wait.querySelector('.chat-bubble').innerHTML=
+      F.esc(d.answer).replace(/\n/g,'<br>')+
+      `<div class="muted tiny" style="margin-top:8px;border-top:1px solid var(--line-soft);padding-top:6px">
+        证据：${d.evidence_hosts} 台主机 · ${d.evidence_anomalies} 条异常</div>`;
+  }catch(e){
+    wait.querySelector('.chat-bubble').innerHTML='<span class="risk-dangerous">出错：'+F.esc(e.message)+'</span>';
+  }finally{
+    document.getElementById('sendBtn').disabled=false;
+    document.getElementById('chatLog').scrollTop=document.getElementById('chatLog').scrollHeight;
+  }
+}
+
+async function loadFleet(){
+  try{
+    const d=await API.get('/api/dashboard/user');
+    const s=d.summary||{};
+    const risk=(s.Warning||0)+(s.Critical||0);
+    document.getElementById('fleetBox').innerHTML=`
+      <div class="row tiny" style="justify-content:space-between;padding:5px 0"><span class="muted">主机总数</span><b>${s.total||0}</b></div>
+      <div class="row tiny" style="justify-content:space-between;padding:5px 0"><span class="muted">在线</span><b class="risk-safe">${s.online||0}</b></div>
+      <div class="row tiny" style="justify-content:space-between;padding:5px 0"><span class="muted">离线</span><b class="${(s.offline||0)?'risk-caution':''}">${s.offline||0}</b></div>
+      <div class="row tiny" style="justify-content:space-between;padding:5px 0"><span class="muted">风险主机</span><b class="${risk?'risk-dangerous':''}">${risk}</b></div>
+      <div class="row tiny" style="justify-content:space-between;padding:5px 0"><span class="muted">平均健康</span><b>${s.avg_health==null?'—':Math.round(s.avg_health)}</b></div>`;
+  }catch(e){ document.getElementById('fleetBox').innerHTML='<div class="empty tiny">暂无数据</div>'; }
+}
+
+render(); loadFleet();
+</script>
+{% endblock %}

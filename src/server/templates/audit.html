@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}审计回溯{% endblock %}
+{% block crumb %}AUDIT TRAIL{% endblock %}
+{% block heading %}审计回溯{% endblock %}
+{% block actions %}<button class="btn ghost sm" onclick="loadAudit()">刷新</button>{% endblock %}
+
+{% block content %}
+<div class="card pad" style="margin-bottom:16px">
+  <div class="row wrap" style="gap:10px">
+    <input id="f-search" placeholder="搜索动作 / 对象 / 摘要…" style="max-width:280px" onkeydown="if(event.key==='Enter')loadAudit()">
+    <select id="f-cat" onchange="loadAudit()" style="width:auto"><option value="">全部类别</option></select>
+    <select id="f-risk" onchange="loadAudit()" style="width:auto">
+      <option value="">全部风险</option><option value="low">低</option><option value="medium">中</option>
+      <option value="high">高</option><option value="critical">严重</option></select>
+    <span class="sp"></span>
+    <div class="row" style="background:var(--bg-3);border-radius:9px;padding:3px">
+      <button class="tabbtn on" data-tab="log" onclick="switchTab('log')">操作日志</button>
+      <button class="tabbtn" data-tab="ssh" onclick="switchTab('ssh')">SSH 会话回放</button>
+    </div>
+  </div>
+</div>
+
+<div id="tab-log" class="card">
+  <div class="card-b" style="padding:0"><table id="auditTable"><tbody><tr><td class="empty">加载中…</td></tr></tbody></table></div>
+</div>
+
+<div id="tab-ssh" class="card" style="display:none">
+  <div class="card-b" style="padding:0"><table id="sshTable"><tbody></tbody></table></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let CATS=[];
+async function init(){
+  const c=await API.get('/api/audit/categories'); CATS=c.categories;
+  document.getElementById('f-cat').innerHTML='<option value="">全部类别</option>'+
+    CATS.map(x=>`<option value="${x}">${({auth:'认证',host:'主机',group:'分组',admin:'管理',ssh:'SSH',ai:'AI',investigation:'调查',system:'系统'})[x]||x}</option>`).join('');
+  loadAudit();
+  // 深链接：?session=ID
+  const sid=new URLSearchParams(location.search).get('session');
+  if(sid){ switchTab('ssh'); setTimeout(()=>replaySession(+sid),300); }
+}
+
+function switchTab(t){
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+  document.getElementById('tab-log').style.display=t==='log'?'':'none';
+  document.getElementById('tab-ssh').style.display=t==='ssh'?'':'none';
+  if(t==='ssh') loadSessions();
+}
+
+async function loadAudit(){
+  const p=new URLSearchParams();
+  const s=v('f-search'); if(s)p.set('search',s);
+  const c=v('f-cat'); if(c)p.set('category',c);
+  const r=v('f-risk'); if(r)p.set('risk',r);
+  const d=await API.get('/api/audit?'+p.toString());
+  const t=document.querySelector('#auditTable tbody');
+  if(!d.items.length){ t.innerHTML='<tr><td class="empty">无匹配记录</td></tr>'; return; }
+  t.innerHTML=`<tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>风险</th><th>AI 摘要</th><th></th></tr>`+
+    d.items.map(a=>`<tr>
+      <td class="muted tiny">${F.time(a.ts)}</td>
+      <td><b>${F.esc(a.username)}</b></td>
+      <td><span class="mono tiny">${F.esc(a.action)}</span></td>
+      <td class="tiny">${F.esc(a.target_name||'—')}</td>
+      <td>${riskTag(a.risk)}</td>
+      <td class="tiny" style="max-width:340px">${F.esc(a.ai_summary||'')}</td>
+      <td><span class="link tiny" onclick='showEntry(${a.id})'>详情</span></td></tr>`).join('');
+}
+const v=id=>document.getElementById(id).value.trim();
+function riskTag(r){ const m={low:['低',''],medium:['中','warn'],high:['高','crit'],critical:['严重','crit']};
+  const x=m[r]||[r,'']; return `<span class="badge ${x[1]}">${x[0]}</span>`; }
+
+async function showEntry(id){
+  const a=await API.get('/api/audit/entry/'+id);
+  let detail='—';
+  try{ detail=a.detail?JSON.stringify(JSON.parse(a.detail),null,2):'—'; }catch(e){ detail=a.detail||'—'; }
+  modal(`
+    <div class="grid g-2" style="margin-bottom:14px">
+      <div><div class="tiny muted">操作者</div><b>${F.esc(a.username)}</b></div>
+      <div><div class="tiny muted">时间</div>${F.date(a.ts)}</div>
+      <div><div class="tiny muted">动作 / 类别</div>${F.esc(a.action)} · ${F.esc(a.category)}</div>
+      <div><div class="tiny muted">来源 IP</div><span class="mono">${F.esc(a.ip||'—')}</span></div>
+    </div>
+    ${a.ai_summary?`<div class="ai-card" style="margin-bottom:12px"><div class="ai-h"><span class="spark"></span>AI 摘要</div>
+      <div class="card-b"><div style="margin-bottom:8px">${F.esc(a.ai_summary)}</div>
+      <div class="tiny muted">${F.esc(a.ai_explanation||'')}</div></div></div>`:''}
+    <div class="tiny muted">详情</div>
+    <pre class="mono tiny" style="background:#0a1120;border-radius:8px;padding:10px;white-space:pre-wrap;overflow:auto">${F.esc(detail)}</pre>
+  `,{title:'审计 #'+a.id});
+}
+
+/* ---------- SSH 会话回放 ---------- */
+async function loadSessions(){
+  const d=await API.get('/api/audit/ssh_sessions');
+  const t=document.querySelector('#sshTable tbody');
+  if(!d.sessions.length){ t.innerHTML='<tr><td class="empty">暂无 SSH 会话</td></tr>'; return; }
+  t.innerHTML=`<tr><th>时间</th><th>用户</th><th>主机</th><th>命令数</th><th>状态</th><th></th></tr>`+
+    d.sessions.map(s=>`<tr>
+      <td class="muted tiny">${F.time(s.started_at)}</td>
+      <td><b>${F.esc(s.username)}</b></td>
+      <td>${F.esc(s.host_name)}</td>
+      <td class="mono">${s.cmd_count}</td>
+      <td>${s.status==='active'?'<span class="badge info">进行中</span>':'<span class="badge">已结束</span>'}</td>
+      <td><span class="link tiny" onclick="replaySession(${s.id})">回放</span></td></tr>`).join('');
+}
+
+async function replaySession(sid){
+  const d=await API.get('/api/audit/ssh_sessions/'+sid);
+  const s=d.session;
+  const cmds=d.commands.map(c=>`<div style="padding:7px 0;border-bottom:1px solid var(--line-soft)">
+    <div class="row tiny"><span class="mono ${cmdRiskClass(c.risk_level)}">$ ${F.esc(c.command)}</span>
+      <span class="sp"></span><span class="badge ${c.risk_level==='dangerous'?'crit':(c.risk_level==='caution'?'warn':'ok')}">${cmdRiskLabel(c.risk_level)}</span>
+      <span class="muted tiny">${({manual:'手动',button:'按钮',ai:'AI'})[c.source]||c.source}</span></div>
+    ${c.output_excerpt?`<pre class="mono tiny" style="background:#0a1120;border-radius:6px;padding:7px;margin-top:5px;white-space:pre-wrap;max-height:120px;overflow:auto;color:var(--ink-2)">${F.esc(c.output_excerpt)}</pre>`:''}
+  </div>`).join('')||'<div class="empty tiny">本次会话未记录命令</div>';
+
+  modal(`
+    <div class="row tiny muted" style="margin-bottom:12px">
+      <span>${F.esc(s.username)} → ${F.esc(s.host_name)}</span><span class="sp"></span>
+      <span>${F.date(s.started_at)} · ${s.cmd_count} 条命令</span></div>
+    ${s.ai_summary?`<div class="ai-card" style="margin-bottom:14px"><div class="ai-h"><span class="spark"></span>会话 AI 摘要</div>
+      <div class="card-b">${F.esc(s.ai_summary)}</div></div>`:
+      `<button class="btn primary sm" style="margin-bottom:14px" onclick="summarize(${sid})">生成 AI 会话摘要</button>`}
+    <div class="tiny muted" style="margin-bottom:4px">命令时间线</div>${cmds}
+  `,{title:'SSH 会话回放 #'+sid});
+}
+
+async function summarize(sid){
+  toast('AI 摘要生成中…');
+  try{ const r=await API.post('/api/audit/ssh_sessions/'+sid+'/summarize'); replaySession(sid); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+init();
+</script>
+<style>
+.tabbtn{border:none;background:transparent;color:var(--ink-2);font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:7px;cursor:pointer}
+.tabbtn.on{background:var(--signal-soft);color:var(--signal-deep)}
+</style>
+{% endblock %}

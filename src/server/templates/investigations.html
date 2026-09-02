@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}AI 调查员{% endblock %}
+{% block crumb %}智能运维 · INVESTIGATOR{% endblock %}
+{% block heading %}AI 调查员{% endblock %}
+{% block actions %}
+<select id="hostFilter" onchange="load()" style="width:auto;padding:6px 10px"><option value="">全部可见主机</option></select>
+<button class="btn ghost sm" onclick="load()">刷新</button>
+{% endblock %}
+
+{% block content %}
+<div class="grid g-4" id="kpis" style="margin-bottom:16px"></div>
+
+<div class="card">
+  <div class="card-h"><h3>调查列表</h3>
+    <span class="sub muted tiny">LM 提出只读诊断计划 → 人工批准执行 → LM 给出根因；修复命令需逐条二次批准</span></div>
+  <div class="card-b" style="padding:0"><table id="invTable"><thead>
+    <tr><th>#</th><th>主机</th><th>状态</th><th>触发</th><th>摘要 / 根因</th><th>时间</th><th></th></tr>
+  </thead><tbody><tr><td colspan="7"><div class="empty">加载中…</div></td></tr></tbody></table></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ST={proposed:['待批准','warn'],approved:['已批准','info'],running:['执行中','info'],
+  done:['已完成','ok'],rejected:['已驳回',''],failed:['失败','crit']};
+let HOSTS={};
+
+async function initFilter(){
+  try{
+    const d=await API.get('/api/hosts');
+    const sel=document.getElementById('hostFilter');
+    (d.hosts||[]).forEach(h=>{ HOSTS[h.id]=h.name;
+      const o=document.createElement('option'); o.value=h.id; o.textContent=h.name; sel.appendChild(o); });
+  }catch(e){}
+}
+
+async function load(){
+  const hid=document.getElementById('hostFilter').value;
+  const url='/api/ai/investigations'+(hid?('?host_id='+hid):'');
+  const d=await API.get(url);
+  const rows=d.investigations||[];
+
+  const c={proposed:0,running:0,done:0,total:rows.length};
+  rows.forEach(r=>{ if(r.status==='proposed')c.proposed++; if(r.status==='running'||r.status==='approved')c.running++; if(r.status==='done')c.done++; });
+  document.getElementById('kpis').innerHTML=`
+    ${kpi('调查总数',c.total,'')}
+    ${kpi('待人工批准',c.proposed,c.proposed?'warn':'')}
+    ${kpi('执行中',c.running,'')}
+    ${kpi('已完成',c.done,'ok')}`;
+
+  const tb=document.querySelector('#invTable tbody');
+  if(!rows.length){ tb.innerHTML='<tr><td colspan="7"><div class="empty">暂无调查记录。可在主机详情页发起 AI 调查。</div></td></tr>'; return; }
+  tb.innerHTML=rows.map(r=>{
+    const st=ST[r.status]||[r.status,''];
+    return `<tr style="cursor:pointer" onclick="viewInv(${r.id})">
+      <td class="mono muted">#${r.id}</td>
+      <td><b>${F.esc(r.host_name||HOSTS[r.host_id]||('#'+r.host_id))}</b></td>
+      <td><span class="badge ${st[1]}">${st[0]}</span></td>
+      <td class="tiny muted">${F.esc(r.trigger||'手动')}</td>
+      <td class="tiny" style="max-width:340px">${F.esc(r.summary||'诊断计划已生成，等待人工批准')}</td>
+      <td class="tiny muted">${F.ago(r.created_at)}</td>
+      <td><button class="btn ghost sm" onclick="event.stopPropagation();viewInv(${r.id})">查看</button></td></tr>`;
+  }).join('');
+}
+
+function kpi(label,val,kind){
+  const col=kind==='warn'?'var(--warn)':(kind==='ok'?'var(--ok)':'var(--ink-1)');
+  return `<div class="kpi"><div class="k-label">${label}</div><div class="k-val" style="color:${col}">${val}</div></div>`;
+}
+
+async function viewInv(id){
+  const inv=await API.get('/api/ai/investigate/'+id);
+  const plan=inv.plan||{};
+  const steps=(plan.steps||[]).map(s=>`<div class="mono tiny" style="padding:6px 0;border-bottom:1px solid var(--line-soft)">
+    <span class="risk-safe">$</span> ${F.esc(s.cmd)} <span class="muted">— ${F.esc(s.purpose||'')}</span></div>`).join('');
+  const transcript=(inv.transcript||[]).map(t=>`<div style="margin-bottom:10px">
+    <div class="mono tiny risk-safe">$ ${F.esc(t.cmd)}</div>
+    <pre class="mono tiny" style="background:#0a1120;border-radius:7px;padding:8px;margin:4px 0;max-height:160px;overflow:auto;white-space:pre-wrap;color:var(--ink-2)">${F.esc((t.output||'').slice(0,1200))||'(无输出)'}</pre></div>`).join('');
+  const remediation=(inv.remediation||[]).map(r=>`<div class="row tiny" style="padding:6px 0;border-bottom:1px solid var(--line-soft)">
+    <span class="mono ${cmdRiskClass(r.risk)}">${F.esc(r.cmd)}</span><span class="sp"></span>
+    <button class="btn sm danger" onclick="remediate(${inv.id},'${encodeURIComponent(r.cmd)}')">批准执行</button></div>
+    <div class="tiny muted" style="margin:-4px 0 8px">${F.esc(r.why||'')}</div>`).join('');
+
+  let foot='';
+  if(inv.status==='proposed') foot=`<button class="btn ghost" onclick="rejectInv(${inv.id})">驳回</button>
+    <button class="btn primary" onclick="approveInv(${inv.id})">人工批准并执行（只读）</button>`;
+
+  modal(`
+    <div class="alert info tiny" style="margin-bottom:14px">假设：${F.esc(plan.hypothesis||'—')}</div>
+    <div class="tiny muted" style="margin-bottom:6px">诊断步骤（均为只读，需人工批准后执行）</div>
+    <div style="margin-bottom:14px">${steps||'<div class="muted tiny">无步骤</div>'}</div>
+    ${inv.findings?`<div class="divider"></div><div class="tiny muted">AI 根因</div><div style="margin:6px 0 14px">${F.esc(inv.findings)}</div>`:''}
+    ${transcript?`<div class="tiny muted">执行记录</div>${transcript}`:''}
+    ${remediation?`<div class="divider"></div><div class="alert warn tiny" style="margin-bottom:10px">以下修复命令有风险，需逐条二次人工批准</div>${remediation}`:''}
+  `,{title:'AI 调查 #'+inv.id+' · 主机 '+F.esc(inv.host_name||''), footer:foot});
+}
+
+async function approveInv(id){
+  try{ await API.post('/api/ai/investigate/'+id+'/approve'); toast('已批准，后台执行中…');
+    document.getElementById('app-modal').classList.remove('show');
+    setTimeout(load,1500);
+  }catch(e){ toast(e.message,'err'); }
+}
+async function rejectInv(id){
+  try{ await API.post('/api/ai/investigate/'+id+'/reject'); toast('已驳回');
+    document.getElementById('app-modal').classList.remove('show'); load();
+  }catch(e){ toast(e.message,'err'); }
+}
+async function remediate(id,cmd){
+  cmd=decodeURIComponent(cmd);
+  if(!confirm('确认在目标主机执行修复命令？\n\n'+cmd)) return;
+  try{ const r=await API.post('/api/ai/investigate/'+id+'/remediate',{cmd}); toast('已执行（退出码 '+(r.result?.exit_code)+'）'); load(); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+(async()=>{ await initFilter(); load(); })();
+</script>
+{% endblock %}

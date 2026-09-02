@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · {{ app_name }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  body{display:grid;place-items:center;min-height:100vh;
+    background:radial-gradient(900px 500px at 85% -5%,#f3e7df,transparent 60%),var(--bg)}
+  .login-wrap{width:100%;max-width:940px;display:grid;grid-template-columns:1.08fr .92fr;gap:0;
+    border:1px solid var(--line);border-radius:22px;overflow:hidden;box-shadow:0 30px 70px -34px rgba(90,60,36,.4);margin:20px;background:var(--bg-2)}
+  .login-hero{padding:52px 46px;position:relative;display:flex;flex-direction:column;
+    background:linear-gradient(165deg,#fbf3ec 0%,#f3e6dc 100%)}
+  .login-hero .logo{width:50px;height:50px;border-radius:15px;display:grid;place-items:center;margin-bottom:30px;
+    background:linear-gradient(150deg,#c2724f,#9a4e33);box-shadow:0 8px 20px -6px rgba(154,78,51,.5)}
+  .login-hero .logo::before{content:"";width:18px;height:18px;border-radius:6px 6px 6px 0;background:#fff;opacity:.94;transform:rotate(8deg)}
+  .login-hero h1{font-size:32px;line-height:1.25;margin-bottom:16px;color:var(--ink)}
+  .login-hero h1 em{font-style:normal;color:var(--signal-deep)}
+  .login-hero p{color:var(--ink-2);font-size:14px;max-width:340px;line-height:1.75}
+  .feat{margin-top:auto;display:flex;flex-direction:column;gap:13px;padding-top:34px}
+  .feat .f{display:flex;gap:11px;align-items:center;font-size:13px;color:var(--ink-2)}
+  .feat .f .dot{background:var(--signal)}
+  .login-form{padding:52px 46px;background:var(--bg-2);display:flex;flex-direction:column;justify-content:center}
+  .login-form h2{font-size:22px;margin-bottom:6px}
+  .login-form .sub{color:var(--ink-3);font-size:13px;margin-bottom:28px}
+  @media(max-width:760px){.login-wrap{grid-template-columns:1fr}.login-hero{display:none}}
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-hero">
+    <div class="logo"></div>
+    <h1>把运维<br><em>交给安心的日常</em></h1>
+    <p>多人协作的主机管理、透明可回溯的 WebSSH、自适应的异常洞察，以及由你把关的 AI 根因调查——让每一次值守都从容。</p>
+    <div class="feat">
+      <div class="f"><span class="dot"></span>每条操作可审计 · AI 自动摘要</div>
+      <div class="f"><span class="dot"></span>自适应基线异常检测 + 容量预测</div>
+      <div class="f"><span class="dot"></span>模型与主机协同诊断 · 人工把关</div>
+    </div>
+  </div>
+  <div class="login-form">
+    <h2>欢迎回来</h2>
+    <div class="sub">{{ app_name }}</div>
+    <label class="field"><span>用户名</span><input id="u" autofocus autocomplete="username" placeholder="admin"></label>
+    <label class="field"><span>密码</span><input id="p" type="password" autocomplete="current-password" placeholder="••••••••"></label>
+    <button class="btn primary" style="justify-content:center;margin-top:8px" id="btn" onclick="doLogin()">登录</button>
+    <div class="muted tiny" style="margin-top:18px">初始管理员默认 <span class="mono">admin / admin123</span>，登录后请立即修改。</div>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+<script>
+async function doLogin(){
+  const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
+  if(!u||!p){ toast('请输入用户名和密码','err'); return; }
+  const btn=document.getElementById('btn'); btn.disabled=true; btn.textContent='登录中…';
+  try{ await API.post('/api/login',{username:u,password:p}); location.href='/'; }
+  catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='登录'; }
+}
+document.getElementById('p').addEventListener('keydown',e=>{ if(e.key==='Enter') doLogin(); });
+document.getElementById('u').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('p').focus(); });
+</script>
+</body>
+</html>

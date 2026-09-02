@@ -1,0 +1,32 @@
+[Unit]
+Description=AIZ Ops Platform Agent
+Documentation=https://github.com/your-org/aiz-ops
+# 网络就绪后再启动，避免上报失败
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# 部署目录默认 /opt/aiz-ops/agent；如有变动请同步修改下方路径
+# 推荐通过环境变量配置服务器地址与令牌（install.sh 会自动注入）：
+Environment=AIZ_SERVER_URL=http://YOUR_SERVER_IP:8000/api/report
+Environment=AIZ_AGENT_TOKEN=sk-secure-token-123456
+Environment=AIZ_INTERVAL=10
+ExecStart=/usr/bin/python3 /opt/aiz-ops/agent/main.py
+
+# 自动重启
+Restart=always
+RestartSec=5s
+
+# 资源限制，防止 Agent 自身占用过多资源
+CPUQuota=10%
+MemoryMax=200M
+
+# 日志交给 journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aiz-agent
+
+[Install]
+WantedBy=multi-user.target

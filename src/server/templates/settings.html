@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}模型设置{% endblock %}
+{% block crumb %}管理 · 模型路由{% endblock %}
+{% block heading %}模型设置{% endblock %}
+{% block actions %}
+<button class="btn ghost sm" onclick="load()">还原</button>
+<button class="btn primary sm" onclick="saveAll()">保存设置</button>
+{% endblock %}
+
+{% block content %}
+<div class="alert info" style="margin-bottom:18px">
+  平台把 AI 任务分成两档：<b>轻量任务</b>(会话摘要、命令解释、命令风险注释、ChatOps、SSH 建议)交给「快速模型」，
+  <b>复杂任务</b>(根因分析、AI 调查计划与结论、修复建议)交给「强力模型」。下面配置好两档模型即可，路由会自动按任务复杂度选择。
+</div>
+
+<!-- 路由方式 -->
+<div class="card" style="margin-bottom:18px">
+  <div class="card-h"><h3>路由方式</h3><span class="sub muted tiny">决定每个任务用哪一档模型</span></div>
+  <div class="card-b">
+    <div class="grid g-2" id="routingBox"></div>
+  </div>
+</div>
+
+<!-- 两档模型 -->
+<div class="grid g-2" id="slotsBox" style="margin-bottom:18px"></div>
+
+<div class="card pad">
+  <div class="row" style="gap:8px;align-items:flex-start">
+    <div>
+      <div style="font-family:var(--font-serif);font-size:15px;margin-bottom:8px">傻瓜切换说明</div>
+      <div class="tiny muted" style="line-height:1.85">
+        · DeepSeek / 通义千问 / 硅基流动 / OpenAI 兼容网关都使用各自的 API Key + base_url，选好供应商会自动填好地址，填 Key 与模型名即可。<br>
+        · 本地 <b>Ollama</b> 无需 Key，先 <span class="mono">ollama pull</span> 模型再填模型名(如 qwen2.5:7b)。<br>
+        · 任意一档点「测试连接」可即时验证；保存后侧栏会显示当前生效的模型来源。<br>
+        · 任何模型调用失败都会自动降级到内置离线规则引擎，不会影响平台正常运行。
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let PRESETS={}, MODES={}, CFG=null;
+
+const SLOT_META={
+  fast:{title:'快速模型', tag:'轻量任务', desc:'会话摘要 · 命令解释 · 风险注释 · ChatOps · SSH 建议'},
+  strong:{title:'强力模型', tag:'复杂任务', desc:'根因分析 · AI 调查计划与结论 · 修复建议'},
+};
+
+async function load(){
+  const d=await API.get('/api/admin/llm');
+  PRESETS=d.presets||{}; MODES=d.routing_modes||{}; CFG=d.config;
+  renderRouting(); renderSlots();
+}
+
+function renderRouting(){
+  const box=document.getElementById('routingBox');
+  box.innerHTML=Object.entries(MODES).map(([k,label])=>{
+    const on=CFG.routing===k;
+    return `<label class="routeopt ${on?'on':''}" onclick="pickRoute('${k}')">
+      <span class="rdot"></span><span>${F.esc(label)}</span></label>`;
+  }).join('');
+}
+function pickRoute(k){ CFG.routing=k; renderRouting(); }
+
+function providerOptions(sel){
+  return Object.entries(PRESETS).map(([k,p])=>
+    `<option value="${k}" ${k===sel?'selected':''}>${F.esc(p.label)}</option>`).join('');
+}
+
+function renderSlots(){
+  document.getElementById('slotsBox').innerHTML=['fast','strong'].map(slot=>{
+    const s=CFG[slot]||{}; const m=SLOT_META[slot];
+    const p=PRESETS[s.provider]||{};
+    const needsKey=p.needs_key!==false && s.provider!=='mock';
+    const keyPh=s.has_key?'已配置 · 留空则不修改':'填入 API Key';
+    return `<div class="card slotcard" data-slot="${slot}">
+      <div class="card-h">
+        <h3>${m.title}</h3>
+        <span class="sub"><label class="switch"><input type="checkbox" id="${slot}-en" ${s.enabled?'checked':''}><span></span></label></span>
+      </div>
+      <div class="card-b">
+        <div class="row tiny" style="margin-bottom:14px"><span class="badge info">${m.tag}</span>
+          <span class="muted">${m.desc}</span></div>
+        <label class="field"><span>供应商</span>
+          <select id="${slot}-prov" onchange="onProvChange('${slot}')">${providerOptions(s.provider)}</select></label>
+        <label class="field"><span>接口地址 base_url</span>
+          <input id="${slot}-base" value="${F.esc(s.base_url||'')}" placeholder="${F.esc(p.base_url||'https://.../v1')}"></label>
+        <label class="field"><span>模型名 model</span>
+          <input id="${slot}-model" list="${slot}-models" value="${F.esc(s.model||'')}" placeholder="${F.esc((p.models&&p.models[0])||'模型名')}">
+          <datalist id="${slot}-models">${(p.models||[]).map(x=>`<option value="${F.esc(x)}">`).join('')}</datalist></label>
+        <label class="field keyfield" id="${slot}-keyf" style="${needsKey?'':'display:none'}"><span>API Key</span>
+          <input id="${slot}-key" type="password" placeholder="${keyPh}"></label>
+        <div class="tiny muted" id="${slot}-hint" style="margin:-4px 0 12px">${F.esc(p.hint||'')}</div>
+        <div class="row">
+          <button class="btn ghost sm" onclick="testSlot('${slot}')">测试连接</button>
+          <span class="sp"></span>
+          <span class="tiny" id="${slot}-result"></span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function onProvChange(slot){
+  const prov=document.getElementById(slot+'-prov').value;
+  const p=PRESETS[prov]||{};
+  // 自动填地址（若为空或仍是上一个预设地址）
+  const baseEl=document.getElementById(slot+'-base');
+  if(!baseEl.value || isPresetBase(baseEl.value)) baseEl.value=p.base_url||'';
+  baseEl.placeholder=p.base_url||'https://.../v1';
+  // 模型 datalist + 占位
+  const dl=document.getElementById(slot+'-models');
+  dl.innerHTML=(p.models||[]).map(x=>`<option value="${F.esc(x)}">`).join('');
+  const modelEl=document.getElementById(slot+'-model');
+  modelEl.placeholder=(p.models&&p.models[0])||'模型名';
+  // key 字段显隐
+  const needsKey=p.needs_key!==false && prov!=='mock';
+  document.getElementById(slot+'-keyf').style.display=needsKey?'':'none';
+  document.getElementById(slot+'-hint').textContent=p.hint||'';
+}
+function isPresetBase(v){ return Object.values(PRESETS).some(p=>p.base_url && p.base_url===v); }
+
+function slotPayload(slot){
+  const key=document.getElementById(slot+'-key').value;
+  return {
+    provider:document.getElementById(slot+'-prov').value,
+    base_url:document.getElementById(slot+'-base').value.trim(),
+    model:document.getElementById(slot+'-model').value.trim(),
+    enabled:document.getElementById(slot+'-en').checked,
+    api_key:key,   // 空=沿用原值
+  };
+}
+
+async function testSlot(slot){
+  const r=document.getElementById(slot+'-result');
+  r.innerHTML='<span class="muted">测试中…</span>';
+  const pl=slotPayload(slot);
+  try{
+    const res=await API.post('/api/admin/llm/test',{slot, provider:pl.provider,
+      base_url:pl.base_url, model:pl.model, api_key:pl.api_key});
+    if(res.ok){
+      r.innerHTML=`<span class="risk-safe">✓ 连接成功 · ${res.latency_ms}ms${res.reply?(' · 回复：'+F.esc(res.reply)):''}</span>`;
+    }else{
+      r.innerHTML=`<span class="risk-dangerous">✗ ${F.esc(res.error||'连接失败')}</span>`;
+    }
+  }catch(e){ r.innerHTML=`<span class="risk-dangerous">✗ ${F.esc(e.message)}</span>`; }
+}
+
+async function saveAll(){
+  const body={routing:CFG.routing, timeout:CFG.timeout||40,
+    fast:slotPayload('fast'), strong:slotPayload('strong')};
+  try{
+    const res=await API.put('/api/admin/llm',body);
+    CFG=res.config;
+    toast('已保存 · 当前模型来源：'+res.label);
+    // 清空 key 输入框，刷新 has_key 状态
+    renderSlots();
+    // 同步侧栏 LLM 标签
+    const badge=document.querySelector('.side-foot .badge.info');
+    if(badge) badge.textContent=res.label;
+  }catch(e){ toast(e.message,'err'); }
+}
+
+load();
+</script>
+<style>
+.routeopt{display:flex;align-items:center;gap:10px;padding:13px 15px;border:1px solid var(--line);border-radius:11px;
+  cursor:pointer;font-size:13.5px;color:var(--ink-2);transition:.15s;background:var(--bg-2)}
+.routeopt:hover{border-color:#e3c6b8}
+.routeopt.on{border-color:var(--signal);background:var(--signal-soft);color:var(--ink)}
+.routeopt .rdot{width:14px;height:14px;border-radius:50%;border:2px solid var(--ink-3);flex:0 0 auto}
+.routeopt.on .rdot{border-color:var(--signal);background:radial-gradient(circle at 50% 50%,var(--signal) 0 4px,transparent 5px)}
+.slotcard .card-h{align-items:center}
+.switch{display:inline-flex;align-items:center;cursor:pointer}
+.switch input{display:none}
+.switch span{width:38px;height:22px;border-radius:999px;background:#dcd2c2;position:relative;transition:.18s;display:inline-block}
+.switch span::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.18s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.switch input:checked+span{background:var(--signal)}
+.switch input:checked+span::after{transform:translateX(16px)}
+</style>
+{% endblock %}
